@@ -52,20 +52,34 @@ over a long life — engineered from well-understood parts, arranged correctly.
 
 ## Why
 
-Thirty years of game AI has been state machines and behaviour trees: they encode
-the *designer's* intentions, never the *agent's*. The NPC has no standpoint, no
-memory of you, no inner life, and cannot surprise its own creator. Players notice
-— and the industry is racing to fix it (Stanford's Generative Agents, DeepMind's
-SIMA, NVIDIA ACE, Inworld). What's missing is an architecture that is **at once**
-believable, lifelong, socially aware, *and* cheap enough to run for a thousand
-NPCs in real time. That's Daimon.
+Most shipped game AI is built on finite-state machines, behaviour trees, and
+planners (GOAP/HTN): they encode the *designer's* intentions, not the *agent's*.
+The result is usually an NPC with no standpoint, no persistent memory of you, and
+no inner life — one that can't surprise its own creator. (There are exceptions —
+*Shadow of Mordor*'s Nemesis system remembers you — but they're bespoke features,
+not a general faculty.) The current wave of fixes comes from the LLM side
+(Stanford's Generative Agents, DeepMind's SIMA, NVIDIA ACE, Inworld).
 
-The load-bearing idea is a **dual-process controller with a rate-limited
-escalation policy**: cheap reflexive cognition every tick; expensive
+Daimon is a concrete, **falsifiable** attempt at the missing combination —
+believable, lifelong, socially aware — built from well-understood parts and,
+unusually, shipping its own evidence: **39 ablation/controlled criteria and 9
+machine-checked theorems that gate every change** (run them — see *Quick start*
+and `RESEARCH.md` §5.1). It is a research concept, not a shipped runtime.
+
+The load-bearing idea for affordability is a **dual-process controller with a
+rate-limited escalation policy**: cheap reflexive cognition every tick; expensive
 deliberation (an LLM in production) only when the agent is *surprised*, in
-*danger*, or genuinely *uncertain*. In our runs that's ~10% of ticks — the
-difference between "one model call per NPC per frame" (impossible) and "one per
-*interesting moment*" (affordable).
+*danger*, or genuinely *uncertain* — ~10% of ticks in our runs, i.e. one model
+call per *interesting moment* rather than per frame. Per-agent cognition is cheap
+(~128k cognitive ticks/s on one CPU core; a six-agent village runs far faster
+than real time).
+
+**What is *not* yet shown:** scale. We've run villages of 6–18 agents, not
+thousands. The benchmarks (`RESEARCH.md` §5.1) show the all-pairs social layer
+growing **super-linearly** (≈207k → 93k agent-ticks/s from 6 to 18 agents), so
+large NPC counts would need that layer made sparse first. Big populations are the
+goal, not a demonstrated result — stated plainly so the measured claims above
+stand on their own.
 
 Read **[`RESEARCH.md`](./RESEARCH.md)** — the full technical report (v1.0): the
 mechanism formalism, the 39-criterion falsifiable evaluation, the **nine
