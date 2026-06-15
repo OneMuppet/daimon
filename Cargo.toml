@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/daimon-core",
+    "crates/daimon-mind",
+    "crates/daimon-world",
+    "crates/daimon-demo",
+    "crates/daimon-game",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Daimon authors"]
+repository = "https://github.com/onemuppet/daimon"
+
+[workspace.dependencies]
+daimon-core = { path = "crates/daimon-core" }
+daimon-mind = { path = "crates/daimon-mind" }
+daimon-world = { path = "crates/daimon-world" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Deterministic PRNG. We deliberately avoid `rand` and seed everything so a
+# Daimon's "life" is fully reproducible from a single u64 seed — essential for
+# debugging an autonomous mind and for regression-testing emergent behaviour.
+
+[profile.release]
+opt-level = 3
+lto = "thin"

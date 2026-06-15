@@ -1,0 +1,48 @@
+[package]
+name = "daimon-game"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Daimon: Smallworld — a wgpu game that renders a village of real Daimon minds you can watch and tend."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "daimon-game"
+path = "src/main.rs"
+
+[dependencies]
+daimon-core = { workspace = true }
+daimon-mind = { workspace = true }
+wgpu = "29"
+winit = "0.30"
+glyphon = "0.11"
+bytemuck = { version = "1", features = ["derive"] }
+log = "0.4"
+# std::time::Instant panics on wasm32-unknown-unknown ("time not implemented").
+# web-time is std::time on native and performance.now() in the browser.
+web-time = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+png = "0.17"
+pollster = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1"
+console_log = "1"
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Window",
+    "Element",
+    "HtmlElement",
+    "HtmlCanvasElement",
+    "Node",
+] }

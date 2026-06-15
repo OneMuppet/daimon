@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Daimon: Smallworld</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body {
+        margin: 0; height: 100%; background: #07070f; overflow: hidden;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+      }
+      #status {
+        position: fixed; inset: 0; display: grid; place-content: center;
+        color: #b9b3c6; text-align: center; gap: 8px; padding: 24px;
+      }
+      #status h1 { font-weight: 600; letter-spacing: 0.02em; color: #f6f4ef; margin: 0; }
+      #status p { margin: 0; max-width: 36rem; line-height: 1.5; }
+      #status code { color: #b98cff; }
+      canvas {
+        display: block; touch-action: none;
+        width: 100vw; height: 100vh;
+        position: fixed; inset: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status">
+      <h1>Daimon: Smallworld</h1>
+      <p>Loading a village of minds…</p>
+      <p style="font-size: 0.85rem; color: #6c6776">
+        Requires a <strong>WebGPU</strong>-capable browser (recent Chrome, Edge, or Safari).
+        If nothing appears, your browser may not support WebGPU yet — run the native build instead.
+      </p>
+    </div>
+    <script type="module">
+      import init from "./daimon_game.js";
+      init()
+        .then(() => {
+          // winit attaches its own canvas; hide the loading splash.
+          const s = document.getElementById("status");
+          if (s) s.style.display = "none";
+        })
+        .catch((e) => {
+          const s = document.getElementById("status");
+          if (s) s.innerHTML =
+            "<h1>Daimon: Smallworld</h1><p>Could not start — likely no WebGPU support in this browser.</p>" +
+            "<p style='font-size:.8rem;color:#6c6776'>" + e + "</p>";
+        });
+    </script>
+  </body>
+</html>

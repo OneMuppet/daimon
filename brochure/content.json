@@ -1,0 +1,233 @@
+{
+  "heroStats": [
+    { "num": "11%", "label": "of ticks think slow", "sub": "the rest is near-free" },
+    { "num": "5", "label": "personas · one engine", "sub": "distinct emergent lives" },
+    { "num": "3", "label": "memory systems", "sub": "episodic·semantic·skill" },
+    { "num": "13", "label": "tests · clippy-clean", "sub": "deterministic by seed" }
+  ],
+
+  "problem": {
+    "title": "Your NPCs are puppets.\nPlayers can tell.",
+    "lede": "Thirty years of game AI — state machines and behaviour trees — encode the designer's intentions, never the agent's. The NPC has no standpoint, no memory of you, and cannot surprise its own creator.",
+    "stats": [
+      {
+        "kicker": "developer appetite",
+        "big": "~75%",
+        "head": "of developers are excited about AI NPCs",
+        "body": "and roughly half expect 40%+ of studios to be building with them within five years.",
+        "src": "Inworld × Censuswide 2024 (vendor)"
+      },
+      {
+        "kicker": "player demand",
+        "big": "99%",
+        "head": "of gamers say advanced AI NPCs would improve gameplay",
+        "body": "near-universal appetite for characters that remember you and react like they mean it.",
+        "src": "Inworld 2024 (vendor)"
+      },
+      {
+        "kicker": "the market",
+        "big": "$11B",
+        "head": "generative AI in gaming by 2033",
+        "body": "from ~$1.1B in 2023; the believable-NPC frontier is where that spend is heading.",
+        "src": "Market.us 2024"
+      }
+    ],
+    "clock": "The labs have shipped the pieces — Generative Agents, Voyager, SIMA, Project Sid. What's missing is one architecture that is believable, lifelong, social, AND cheap enough to run for a thousand NPCs in real time. That is the gap."
+  },
+
+  "product": {
+    "title": "Not a smarter script.\nA cognitive cycle.",
+    "lede": "Each tick, the world hands the mind a percept; the mind hands back one bounded action and one legible thought. In between runs a fixed seven-step cycle — the BDI loop wearing a dual-process coat.",
+    "flow": {
+      "lab": "one cognitive cycle per tick — fast almost always, slow only when it matters",
+      "nodes": [
+        { "name": "World", "sub": "percept in: body, sights, events", "dark": false },
+        { "name": "The Mind", "sub": "perceive · appraise · decide · act · reflect", "dark": true },
+        { "name": "World", "sub": "one bounded action out", "dark": false }
+      ]
+    },
+    "features": [
+      { "k": "01 perceive", "h": "World model", "p": "Beliefs that decay out of sight — so the agent can be wrong, mistaken, and surprised." },
+      { "k": "02 appraise", "h": "Drives", "p": "Homeostatic needs plus intrinsic curiosity. It wants things; nobody scripts 'go eat'." },
+      { "k": "03 reflex", "h": "Instinct", "p": "A predator at arm's reach triggers flight with no deliberation at all." },
+      { "k": "04 decide", "h": "Dual process", "p": "Cheap System-1 arbitration — or escalate to System-2 when surprised, risky, or torn." },
+      { "k": "memory", "h": "Three stores", "p": "Episodic with salience recall and forgetting, semantic facts, a growing skill library." },
+      { "k": "intentions", "h": "Commitment", "p": "An adopted goal persists (Bratman) — so a mind with two needs doesn't dither and starve." },
+      { "k": "social", "h": "Theory of mind", "p": "Models the other agents it meets; relationships carry history (ToMnet)." },
+      { "k": "reflect", "h": "Consolidation", "p": "Periodically distils raw experience into durable facts, skills, and self-concept." },
+      { "k": "express", "h": "Legibility", "p": "Every decision narrated and tagged REFLEX / fast / SLOW — the mind made visible." }
+    ],
+    "yaml": [
+      [["cm", "// System 2 plugs in here — one trait."]],
+      [["k", "pub trait "], ["", "Deliberator {"]],
+      [["", "    "], ["k", "fn "], ["", "deliberate(&mut self, ctx: &Ctx)"]],
+      [["", "        -> Deliberation;"]],
+      [["", "}"]],
+      [["", ""]],
+      [["cm", "// Each tick: one action, one thought."]],
+      [["k", "pub fn "], ["", "cycle(&mut self, p: &Percept)"]],
+      [["", "    -> Thought {"]],
+      [["", "    self.perceive(p);          "], ["cm", "// beliefs + memory"]],
+      [["", "    "], ["k", "let "], ["", "s = self.appraise(p);  "], ["cm", "// drives + surprise"]],
+      [["", "    "], ["k", "if let "], ["", "Some(t) = self.reflex(p) {"]],
+      [["", "        "], ["k", "return "], ["", "t;              "], ["cm", "// instinct wins"]],
+      [["", "    }"]],
+      [["", "    "], ["k", "let "], ["", "goal = self.decide(s); "], ["cm", "// fast — or slow"]],
+      [["", "    self.act(&goal)            "], ["cm", "// -> bounded Action"]],
+      [["", "}"]]
+    ]
+  },
+
+  "benchmarks": {
+    "title": "One engine. Five minds.",
+    "lede": "Five personas differ only in three trait scalars — boldness, sociability, curiosity — layered over identical code. Run in the same world for 400 ticks, they live measurably different lives. None of it is scripted.",
+    "method": "Daimon ships a deterministic, offline build: no model weights, no network. An honest HeuristicDeliberator stands in for the language model, so what you observe is the architecture itself, not a model's eloquence. Every number below is produced by the included demo at seed 0xDA13 and reproducible with one command.",
+    "overhead": {
+      "title": "Conversations over a 400-tick life",
+      "sub": "Same code, same map — sociability alone reshapes the life.",
+      "bars": [
+        { "label": "Mira — social", "val": "64", "w": 1.0, "blue": true },
+        { "label": "Sela — timid", "val": "27", "w": 0.42 },
+        { "label": "Kael — balanced", "val": "15", "w": 0.23 },
+        { "label": "Vell — curious", "val": "0", "w": 0.015 },
+        { "label": "Roin — bold", "val": "0", "w": 0.015 }
+      ],
+      "note": "The social agent crosses the map again and again to be near others — and takes more predator hits doing it. The curious one ignores company to study a monolith. Emergent, not authored."
+    },
+    "percentiles": {
+      "title": "Deliberation stays ~10%",
+      "sub": "System-2 ticks (%)",
+      "bars": [
+        { "l": "bal", "v": 10 },
+        { "l": "cur", "v": 9 },
+        { "l": "tim", "v": 11 },
+        { "l": "soc", "v": 11 },
+        { "l": "bold", "v": 8 }
+      ],
+      "note": "~90% of cognition is near-free System-1. The model is spent only on the moments that matter."
+    },
+    "optimisation": {
+      "title": "Health at 400 ticks (%)",
+      "sub": "survival is a personality outcome",
+      "bars": [
+        { "l": "bal", "v": 100 },
+        { "l": "cur", "v": 100 },
+        { "l": "tim", "v": 96 },
+        { "l": "soc", "v": 79, "coral": true },
+        { "l": "bold", "v": 33, "coral": true }
+      ],
+      "note": "Bold runs hot and near the edge; social courts risk for company. The architecture, not a difficulty slider."
+    },
+    "bignums": [
+      { "n": "13 / 13", "p": "tests passing, clippy-clean — emergent behaviour kept under regression test." },
+      { "n": "~3,400", "p": "lines of Rust across four crates; a whole mind is a serialisable value." },
+      { "n": "0", "p": "network calls in the demo: fully deterministic and offline, same seed → same life." }
+    ],
+    "scaling": {
+      "title": "Why a thousand NPCs is affordable.",
+      "sub": "The escalation policy turns 'one model call per NPC per frame' (impossible) into 'one per interesting moment' (a fleet).",
+      "note": "Everything System 1 handles — locomotion, routine foraging, reflexive flight, holding a commitment — costs nothing but local compute. The expensive reasoner is spent only where it changes the outcome: novel situations, hard trade-offs, social nuance, recovering from surprise. In our runs that is ~10% of ticks, debounced by a cooldown — a handful of model calls per agent per minute instead of thousands."
+    }
+  },
+
+  "security": {
+    "title": "Honest status — concept, not runtime.",
+    "lede": "The architecture is complete and tested. What remains is mostly integration — a model, an engine — not unbuilt cognition. This is the line between what runs today and what is designed-for.",
+    "rows": [
+      ["Cognitive cycle", "Perceive → appraise → reflex → decide → plan → act → reflect, built and tested", "ok"],
+      ["Memory", "Episodic (salience recall + forgetting), semantic, procedural, spatial map", "ok"],
+      ["Theory of mind", "Per-agent models with disposition and relationship history", "ok"],
+      ["Persona diversity", "One engine yielding five distinct, emergent lives", "ok"],
+      ["Determinism", "Seeded PRNG; reproducible lives; 13 passing tests", "ok"],
+      ["LLM deliberator", "Trait defined + documented; wire to Claude (ReAct / Reflexion / ToT)", "roadmap"],
+      ["Learned world model", "Principled surprise and planning in unknown dynamics (MuZero-style)", "roadmap"],
+      ["Engine embodiment", "Bevy / Unity / Unreal via the bounded action surface", "roadmap"],
+      ["Pixel perception", "SIMA-style sensing instead of a structured percept", "roadmap"],
+      ["Multi-agent scale", "A Project Sid / PIANO-style cognitive society", "roadmap"]
+    ],
+    "note": "SHIPPED means built and tested in the concept repository; ROADMAP means designed-for, with the seam already in place. Full detail in ROADMAP.md and WHITEPAPER.md §7."
+  },
+
+  "voices": {
+    "title": "What it stands on.",
+    "quotes": [
+      { "q": "A believable agent is a memory stream, plus reflection, plus planning over it.", "who": "Generative Agents", "org": "Park et al., Stanford · UIST 2023" },
+      { "q": "Lifelong competence comes from a growing library of skills and a self-set curriculum.", "who": "Voyager", "org": "Wang et al. · TMLR 2023" },
+      { "q": "Think fast by default; think slow only when it pays — and budget the slow path.", "who": "Thinking, Fast and Slow (in AI)", "org": "Kahneman 2011 · Booch et al., AAAI 2021" },
+      { "q": "Curiosity is the reward for the kind of surprise that improves your model of the world.", "who": "Intrinsic motivation", "org": "Schmidhuber 2010 · Pathak et al. 2017" },
+      { "q": "An intention, once adopted, must persist — or a mind with two wants achieves neither.", "who": "Belief–Desire–Intention", "org": "Bratman 1987 · Rao & Georgeff 1995" }
+    ],
+    "disclaimer": "These are descriptions of published ideas that Daimon composes, attributed to their sources — not endorsements of this work. ReAct, Reflexion, Tree-of-Thoughts, ToMnet, GOAP and HTN round out the lineage; full citations are in WHITEPAPER.md."
+  },
+
+  "tooling": {
+    "title": "Four crates, one mind.",
+    "lede": "A Cargo workspace. The cognition is mechanism-free types in core; the thinking lives in mind; the world is a small testbed; the demo lets you watch a life unfold.",
+    "cards": [
+      {
+        "h": "daimon-core",
+        "pill": "SERDE ONLY",
+        "code": "pub struct DriveSystem {\n  levels: Map<Drive, f32>,\n}\n\n// percepts · beliefs\n// memory · goals · actions",
+        "p": "The cognitive type system. With only serde as a dependency, a whole mind is a plain serialisable value you can snapshot, diff, and replay."
+      },
+      {
+        "h": "daimon-mind",
+        "pill": "THE ENGINE",
+        "code": "Mind::cycle(&percept)\n  -> Thought {\n       action,\n       inner,\n     }\n// dual-process + escalation",
+        "p": "The seven-step cycle, commitment with hysteresis, the planner, theory of mind, and the Deliberator seam where a language model plugs in."
+      },
+      {
+        "h": "daimon-world",
+        "pill": "TESTBED",
+        "code": "World::step(&action)\n  -> Percept\n\n// food · water · curios\n// a stalking predator\n// wandering townsfolk",
+        "p": "A tiny deterministic grid world — just enough stakes that any lifelike behaviour you see comes from the mind, not from elaborate scenery."
+      },
+      {
+        "h": "daimon-demo",
+        "pill": "CARGO RUN",
+        "code": "$ cargo run --bin daimon\n    --persona social\n    --ticks 400\n\n# a narrated life +\n# end-of-life review",
+        "p": "Drops a mind into the world and prints its narrated inner life, then a life-in-review: beliefs, skills, relationships, and most-vivid memories."
+      }
+    ]
+  },
+
+  "engage": {
+    "title": "From concept to a cast of thousands.",
+    "lede": "The architecture is done and the seams are in place. Three moves turn the concept into a runtime.",
+    "tiers": [
+      {
+        "kicker": "next",
+        "name": "Give it a voice",
+        "hot": false,
+        "items": [
+          "Implement the LlmDeliberator behind the existing trait",
+          "Render context → prompt; parse a goal + chain-of-thought",
+          "ReAct / Reflexion / Tree-of-Thoughts compose unchanged",
+          "Same ~10% cost envelope — a few model calls per agent per minute"
+        ]
+      },
+      {
+        "kicker": "then",
+        "name": "Give it a body",
+        "hot": true,
+        "items": [
+          "Embed in Bevy / Unity / Unreal via the bounded action surface",
+          "Continuous space and navmesh in place of grid steps",
+          "Optional perception from pixels, SIMA-style",
+          "Persist a live mind to disk; resume; author its memories"
+        ]
+      },
+      {
+        "kicker": "later",
+        "name": "Give it a society",
+        "hot": false,
+        "items": [
+          "Many fully-cognitive agents sharing one world",
+          "Emergent roles, economy, and culture (Project Sid / PIANO)",
+          "A director layer that sets soft goals for a whole cast",
+          "Governance: bounded contracts, budgets, kill-switch (Reins)"
+        ]
+      }
+    ]
+  }
+}

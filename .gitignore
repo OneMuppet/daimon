@@ -1,0 +1,27 @@
+# --- Rust ---
+/target
+**/target
+**/*.rs.bk
+*.orig
+
+# --- generated whitepaper PDF (regenerate: python3 scripts/build_pdf.py) ---
+*.pdf
+
+# --- generated WebGPU bundle (regenerate: ./scripts/build-web.sh) ---
+crates/daimon-game/web/daimon_game.js
+crates/daimon-game/web/daimon_game_bg.wasm
+crates/daimon-game/web/*.d.ts
+
+# --- Python (the PDF builder) ---
+__pycache__/
+*.pyc
+
+# --- macOS / editors ---
+.DS_Store
+*.swp
+*~
+
+# --- Node (brochure site) ---
+node_modules/
+**/node_modules/
+dist/

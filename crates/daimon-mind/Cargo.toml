@@ -1,0 +1,19 @@
+[package]
+name = "daimon-mind"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The Daimon cognitive cycle: appraisal, dual-process deliberation, planning, reflection, theory of mind."
+
+[dependencies]
+daimon-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Real HTTP to a model provider lives behind a feature so the core stays
+# offline/deterministic; the transport is injected, so the seam is tested
+# without network and `llm-http` only adds the wire.
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false, optional = true }
+
+[features]
+llm-http = ["dep:reqwest"]

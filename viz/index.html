@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Daimon — Training a Believable Mind</title>
+<style>
+  :root{
+    --bg:#0a0a12; --panel:#12121d; --panel2:#171626; --ink:#f6f4ef; --dim:#9a93ad;
+    --faint:#6c6680; --line:#241f38; --accent:#b98cff; --accent2:#6ea8ff;
+    --good:#5fd6a0; --bad:#ff6a6a; --gold:#f0c24e;
+    --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    --sans:"Inter",ui-sans-serif,system-ui,sans-serif;
+    --serif:"Fraunces",Georgia,serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    -webkit-font-smoothing:antialiased}
+  a{color:var(--accent)}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 22px 60px}
+  header{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;flex-wrap:wrap}
+  h1{font-family:var(--serif);font-weight:600;font-size:30px;letter-spacing:.01em;margin:0 0 4px}
+  h1 .em{color:var(--accent)}
+  .sub{color:var(--dim);font-size:14.5px;max-width:46rem;line-height:1.55;margin:0}
+  .verdict{font-family:var(--mono);font-size:12.5px;font-weight:600;padding:8px 14px;border-radius:999px;
+    border:1px solid var(--line);color:var(--dim);white-space:nowrap;transition:.5s}
+  .verdict.reached{color:#08120d;background:var(--good);border-color:var(--good);
+    box-shadow:0 0 0 4px rgba(95,214,160,.16)}
+  /* transport */
+  .transport{display:flex;align-items:center;gap:14px;margin:22px 0 10px}
+  .play{appearance:none;border:1px solid var(--line);background:var(--panel2);color:var(--ink);
+    font:600 13px var(--sans);padding:9px 16px;border-radius:9px;cursor:pointer;transition:.15s}
+  .play:hover{border-color:var(--accent);color:var(--accent)}
+  .scrub{flex:1;appearance:none;height:5px;border-radius:3px;background:var(--line);outline:none}
+  .scrub::-webkit-slider-thumb{appearance:none;width:16px;height:16px;border-radius:50%;
+    background:var(--accent);cursor:pointer;border:2px solid var(--bg)}
+  .genlabel{font-family:var(--mono);font-size:13px;color:var(--dim);min-width:120px;text-align:right}
+  .genlabel b{color:var(--ink)}
+  /* grid */
+  .grid{display:grid;grid-template-columns:1.05fr 1fr;gap:16px;margin-top:8px}
+  @media(max-width:880px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 18px 16px}
+  .panel h2{font:600 12px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--faint);
+    margin:0 0 14px}
+  /* facet bars */
+  .facet{margin:11px 0}
+  .facet .top{display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px}
+  .facet .name{color:var(--ink)}
+  .facet .val{font-family:var(--mono);color:var(--dim)}
+  .track{position:relative;height:13px;background:#0c0b16;border-radius:7px;overflow:hidden;
+    border:1px solid var(--line)}
+  .fill{position:absolute;left:0;top:0;bottom:0;border-radius:7px;
+    background:linear-gradient(90deg,var(--accent2),var(--accent));transition:width .7s cubic-bezier(.4,0,.2,1),background .5s}
+  .fill.met{background:linear-gradient(90deg,#4bbf8a,var(--good))}
+  .target{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--ink);opacity:.65}
+  .target::after{content:"";position:absolute;top:-4px;left:-3px;border:4px solid transparent;
+    border-top-color:var(--ink);opacity:.8}
+  .scalarbig{margin-top:16px;padding-top:14px;border-top:1px dashed var(--line);
+    display:flex;align-items:baseline;justify-content:space-between}
+  .scalarbig .k{font-size:13px;color:var(--dim)}
+  .scalarbig .v{font-family:var(--serif);font-size:30px;color:var(--ink)}
+  .scalarbig .v.met{color:var(--good)}
+  /* canvas */
+  canvas{width:100%;height:240px;display:block}
+  .cap{font-size:12px;color:var(--faint);margin-top:8px;line-height:1.5}
+  /* genes */
+  .gene{display:grid;grid-template-columns:118px 1fr 42px;align-items:center;gap:9px;margin:6px 0;font-size:12px}
+  .gene .gn{color:var(--dim);font-family:var(--mono);font-size:11px;text-align:right;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .gene .gt{height:9px;background:#0c0b16;border-radius:5px;overflow:hidden;border:1px solid var(--line)}
+  .gene .gf{height:100%;background:linear-gradient(90deg,#5a4b86,var(--accent));transition:width .7s}
+  .gene .gv{font-family:var(--mono);font-size:11px;color:var(--faint);text-align:right}
+  .gene.key .gn{color:var(--accent)}
+  /* journey */
+  .journey{display:flex;flex-direction:column;gap:0}
+  .step{display:grid;grid-template-columns:26px 1fr;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+  .step:last-child{border-bottom:0}
+  .dot{width:14px;height:14px;border-radius:50%;margin:3px auto 0;border:2px solid}
+  .dot.pos{background:var(--good);border-color:var(--good)}
+  .dot.neg{background:var(--bad);border-color:var(--bad)}
+  .dot.mix{background:linear-gradient(135deg,var(--bad),var(--good));border-color:var(--good)}
+  .dot.win{background:var(--gold);border-color:var(--gold);box-shadow:0 0 0 4px rgba(240,194,78,.16)}
+  .step .mt{font-size:13.5px;color:var(--ink);font-weight:600}
+  .step .mt .tag{font-family:var(--mono);font-size:10px;font-weight:600;padding:2px 7px;border-radius:5px;
+    margin-left:8px;vertical-align:middle}
+  .tag.pos{color:#08120d;background:var(--good)} .tag.neg{color:#1a0808;background:var(--bad)}
+  .tag.mix{color:#1a1408;background:var(--gold)} .tag.win{color:#1a1408;background:var(--gold)}
+  .step .mn{font-size:12.5px;color:var(--dim);line-height:1.5;margin-top:3px}
+  /* mechanisms */
+  .mechs{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px}
+  @media(max-width:880px){.mechs{grid-template-columns:repeat(2,1fr)}}
+  .mech{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:11px 12px}
+  .mech .mname{font-size:12.5px;font-weight:600;color:var(--ink)}
+  .mech .mfield{font-family:var(--mono);font-size:10px;color:var(--accent);margin:3px 0}
+  .mech .mnote{font-size:11px;color:var(--faint);line-height:1.45}
+  .holdout{font-family:var(--mono);font-size:12px;color:var(--dim);margin-top:14px;
+    padding:10px 12px;border:1px dashed var(--line);border-radius:9px}
+  .holdout b{color:var(--good)}
+  .foot{color:var(--faint);font-size:12px;margin-top:26px;line-height:1.6}
+  .err{color:var(--bad);font-family:var(--mono);font-size:13px;padding:20px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Daimon — training a <span class="em">believable</span> mind</h1>
+      <p class="sub">A self-improving loop makes the believability harness its own fitness function and
+      evolves a village of minds across generations. Watch every facet of a believable life climb toward
+      its bar — until the loop, on its own evaluation, declares the goal reached. <b>Real data</b>, exported
+      from the run.</p>
+    </div>
+    <div id="verdict" class="verdict">running…</div>
+  </header>
+
+  <div class="transport">
+    <button id="play" class="play">▶ play</button>
+    <input id="scrub" class="scrub" type="range" min="0" max="0" value="0" step="1" />
+    <div id="genlabel" class="genlabel"></div>
+  </div>
+
+  <div class="grid">
+    <!-- facets -->
+    <div class="panel">
+      <h2>The facets of a believable life — vs. their target</h2>
+      <div id="facets"></div>
+      <div class="scalarbig">
+        <span class="k">aggregate believability (weighted)</span>
+        <span id="scalar" class="v">—</span>
+      </div>
+      <div id="holdout" class="holdout"></div>
+    </div>
+
+    <!-- trajectory -->
+    <div class="panel">
+      <h2>Fitness across generations</h2>
+      <canvas id="chart"></canvas>
+      <div class="cap">Champion (solid) and population mean (faint) by generation; faint dots are the whole
+        population each generation; the dashed line is the target. The loop self-halts the moment the
+        champion clears every facet.</div>
+    </div>
+
+    <!-- genes -->
+    <div class="panel">
+      <h2>What the loop learned matters — gene sensitivity</h2>
+      <div id="genes"></div>
+      <div class="cap">Each generation the loop correlates every gene with fitness and mutates the
+        high-impact ones harder. Bars = learned sensitivity; the foraging/anticipation genes rise to the top.</div>
+    </div>
+
+    <!-- journey -->
+    <div class="panel">
+      <h2>The road here — including the honest dead ends</h2>
+      <div id="journey" class="journey"></div>
+    </div>
+  </div>
+
+  <div class="mechs" id="mechs"></div>
+
+  <p class="foot" id="foot"></p>
+</div>
+
+<script>
+const FACETS = [
+  ["survival","Survival","keeps its needs met — little time starving"],
+  ["safety","Safety","avoids harm — rarely within the stalker's reach"],
+  ["balance","Balance","no fixation — spreads attention across drives"],
+  ["expression","Expression","varied, non-repetitive, grounded dialogue"],
+  ["exploration","Exploration","covers ground, discovers, invents"],
+  ["emotion","Emotion","a responsive, varied emotional life — not flat"],
+  ["knowledge","Knowledge","learned competence + breadth of understood affordances"],
+];
+const $ = s => document.querySelector(s);
+let D=null, gen=0, playing=false, timer=null;
+
+fetch('training_data.json').then(r=>r.json()).then(data=>{ D=data; init(); })
+  .catch(e=>{ document.body.innerHTML =
+    '<div class="err">Could not load training_data.json — serve this folder over http:<br><br>'+
+    'cargo run -p daimon-game --example autogenesis_trace --release<br>'+
+    'python3 -m http.server -d viz 8090  →  open http://localhost:8090<br><br>'+e+'</div>'; });
+
+function init(){
+  const G = D.generations;
+  // facet rows
+  $('#facets').innerHTML = FACETS.map(([k,name])=>{
+    const tgt = D.target[k]*100;
+    return `<div class="facet" data-k="${k}">
+      <div class="top"><span class="name">${name}</span><span class="val"></span></div>
+      <div class="track"><div class="fill"></div><div class="target" style="left:${tgt}%"></div></div>
+    </div>`; }).join('');
+  // mechanisms
+  $('#mechs').innerHTML = D.mechanisms.map(m=>
+    `<div class="mech"><div class="mname">${m.name}</div><div class="mfield">${m.field}</div>
+     <div class="mnote">${m.note}</div></div>`).join('');
+  // journey
+  const cls={positive:'pos',negative:'neg','negative→positive':'mix',breakthrough:'win'};
+  $('#journey').innerHTML = D.journey.map(j=>{
+    const c=cls[j.effect]||'pos';
+    return `<div class="step"><div><div class="dot ${c}"></div></div>
+      <div><div class="mt">${j.mechanism}<span class="tag ${c}">${j.effect}</span></div>
+      <div class="mn">${j.note}</div></div></div>`; }).join('');
+  // scrubber
+  const sc=$('#scrub'); sc.max=G.length-1; sc.value=0;
+  sc.addEventListener('input',()=>{ pause(); show(+sc.value); });
+  $('#play').addEventListener('click',()=> playing?pause():play());
+  // footer
+  const ch=D.champion.facets;
+  $('#foot').innerHTML = `Champion found in ${G.length-1} generation${G.length-1===1?'':'s'} of the loop's own search — `+
+    `anticipation + commons-aware foraging + a tuned escalation config, not hand-set. `+
+    `The two negative turns are kept on the record: they are what located the true cause (an under-resourced world), `+
+    `which — once made fair — let coordination finally pay off. Reached by good policy in a fair world, validated on unseen seeds.`;
+  show(0); play();
+}
+
+function play(){ playing=true; $('#play').textContent='❚❚ pause';
+  timer=setInterval(()=>{ if(gen>=D.generations.length-1){ pause(); return; } show(gen+1); }, 1300); }
+function pause(){ playing=false; $('#play').textContent='▶ play'; clearInterval(timer); }
+
+function show(i){
+  gen=Math.max(0,Math.min(i,D.generations.length-1));
+  const g=D.generations[gen], b=g.best;
+  $('#scrub').value=gen;
+  const reached = D.verdict==='ReachedTarget' && gen===D.generations.length-1;
+  $('#genlabel').innerHTML = `generation <b>${g.gen}</b> / ${D.generations.length-1}`;
+  // facets
+  FACETS.forEach(([k])=>{
+    const row=$(`.facet[data-k="${k}"]`); const v=b[k], met=v>=D.target[k];
+    const fill=row.querySelector('.fill'); fill.style.width=(v*100)+'%';
+    fill.classList.toggle('met',met);
+    row.querySelector('.val').textContent = `${v.toFixed(2)}  /  ${D.target[k].toFixed(2)}${met?'  ✓':''}`;
+  });
+  // scalar
+  const sMet=b.scalar>=D.target.scalar;
+  const sc=$('#scalar'); sc.textContent=b.scalar.toFixed(3);
+  sc.classList.toggle('met',sMet);
+  // verdict
+  const vd=$('#verdict');
+  if(reached){ vd.textContent='★ END-GOAL REACHED'; vd.classList.add('reached'); }
+  else { vd.textContent=`searching — gen ${g.gen}`; vd.classList.remove('reached'); }
+  // holdout (only reveal at the end)
+  const h=D.holdout;
+  $('#holdout').innerHTML = (gen===D.generations.length-1)
+    ? `held-out validation (5 unseen seeds): survival <b>${h.facets.survival.toFixed(2)}</b>, `+
+      `scalar <b>${h.facets.scalar.toFixed(2)}</b> — target met: <b>${h.met?'YES — generalises':'no'}</b>`
+    : `held-out validation revealed when the loop halts…`;
+  // genes
+  renderGenes(g);
+  drawChart();
+}
+
+function renderGenes(g){
+  const idx=g.gain.map((v,i)=>i).sort((a,b)=>g.gain[b]-g.gain[a]);
+  const key=new Set(['foresight','social_forage','forage_drr','empowerment']);
+  $('#genes').innerHTML = idx.map(i=>{
+    const nm=D.geneNames[i], isKey=key.has(nm);
+    return `<div class="gene ${isKey?'key':''}">
+      <div class="gn">${nm}</div>
+      <div class="gt"><div class="gf" style="width:${Math.min(100,g.gain[i]*100)}%"></div></div>
+      <div class="gv">${g.gain[i].toFixed(2)}</div></div>`; }).join('');
+}
+
+function drawChart(){
+  const cv=$('#chart'), dpr=window.devicePixelRatio||1;
+  const W=cv.clientWidth, H=240; cv.width=W*dpr; cv.height=H*dpr;
+  const x=cv.getContext('2d'); x.scale(dpr,dpr);
+  const G=D.generations, n=G.length;
+  const pad={l:38,r:12,t:14,b:24};
+  const x0=pad.l, x1=W-pad.r, y0=H-pad.b, y1=pad.t;
+  const ymin=0.55, ymax=0.92;
+  const X=i=> n<=1?x0:x0+(x1-x0)*i/(n-1);
+  const Y=v=> y0+(y1-y0)*(v-ymin)/(ymax-ymin);
+  x.clearRect(0,0,W,H);
+  // axes grid
+  x.strokeStyle='#241f38'; x.fillStyle='#6c6680'; x.font='10px ui-monospace,monospace'; x.lineWidth=1;
+  [0.6,0.7,0.8,0.9].forEach(v=>{ const y=Y(v); x.beginPath();x.moveTo(x0,y);x.lineTo(x1,y);x.stroke();
+    x.fillText(v.toFixed(1),6,y+3); });
+  // target line
+  const ty=Y(D.target.scalar);
+  x.strokeStyle='#9a93ad'; x.setLineDash([5,4]); x.beginPath();x.moveTo(x0,ty);x.lineTo(x1,ty);x.stroke();
+  x.setLineDash([]); x.fillStyle='#9a93ad'; x.fillText('target '+D.target.scalar.toFixed(2),x1-78,ty-5);
+  // population dots
+  x.fillStyle='rgba(110,168,255,.18)';
+  G.forEach((g,i)=>{ (g.pop||[]).forEach(p=>{ x.beginPath();x.arc(X(i),Y(+p),2,0,7);x.fill(); }); });
+  // mean line
+  line(x,G.map((g,i)=>[X(i),Y(g.mean)]),'rgba(154,147,173,.55)',1.5);
+  // best line
+  line(x,G.map((g,i)=>[X(i),Y(g.best.scalar)]),'#b98cff',2.5);
+  // points up to current gen
+  G.forEach((g,i)=>{ if(i>gen)return; const cx=X(i),cy=Y(g.best.scalar);
+    x.fillStyle = i===gen?'#f6f4ef':'#b98cff'; x.beginPath();x.arc(cx,cy,i===gen?5:3,0,7);x.fill();
+    if(i===gen){ x.strokeStyle='#b98cff';x.lineWidth=2;x.beginPath();x.arc(cx,cy,8,0,7);x.stroke(); }});
+  // x labels
+  x.fillStyle='#6c6680'; G.forEach((g,i)=>{ if(n>10&&i%2)return; x.fillText('g'+g.gen,X(i)-6,H-8); });
+}
+function line(x,pts,color,w){ x.strokeStyle=color;x.lineWidth=w;x.beginPath();
+  pts.forEach((p,i)=> i?x.lineTo(p[0],p[1]):x.moveTo(p[0],p[1])); x.stroke(); }
+window.addEventListener('resize',()=>D&&drawChart());
+</script>
+</body>
+</html>

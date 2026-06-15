@@ -1,0 +1,40 @@
+{
+  "name": "Daimon",
+  "tagline": "Game agents that feel like minds.",
+  "subtitle": "A Cognitive Architecture for Autonomous Game AI",
+  "company": "onemuppet",
+  "version": "0.1.0",
+  "date": "June 2026",
+  "contact": "github.com/onemuppet/daimon",
+  "colors": {
+    "paper": "#f6f4ef",
+    "card": "#fffdf9",
+    "ink": "#161318",
+    "muted": "#6c6776",
+    "line": "#dcd6d9",
+    "blue": "#5b3df0",
+    "coral": "#ef6a3d",
+    "green": "#1d7a4f",
+    "gold": "#ffcf5a",
+    "ghost": "#cbc4cf",
+    "codebg": "#191620",
+    "codetext": "#d9d3e0",
+    "codecomment": "#7c7690",
+    "codekey": "#b58cf0",
+    "codestr": "#e6c07b",
+    "codenum": "#d19a66",
+    "barmute": "#b6b0bd",
+    "track": "#ece9ee"
+  },
+  "fonts": {
+    "display": "fonts/Fraunces-Regular.ttf",
+    "displayMedium": "fonts/Fraunces-Medium.ttf",
+    "displaySemi": "fonts/Fraunces-SemiBold.ttf",
+    "displayItalic": "fonts/Fraunces-Italic.ttf",
+    "body": "fonts/Inter-Regular.ttf",
+    "bodyMedium": "fonts/Inter-Medium.ttf",
+    "bodySemi": "fonts/Inter-SemiBold.ttf",
+    "mono": "fonts/PlexMono-Regular.ttf",
+    "monoMedium": "fonts/PlexMono-Medium.ttf"
+  }
+}

@@ -1,0 +1,16 @@
+[package]
+name = "daimon-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Watch a Daimon live a life: a narrated run of the cognitive architecture in a grid world."
+
+[[bin]]
+name = "daimon"
+path = "src/main.rs"
+
+[dependencies]
+daimon-core = { workspace = true }
+daimon-mind = { workspace = true }
+daimon-world = { workspace = true }
