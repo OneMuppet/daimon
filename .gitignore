@@ -4,8 +4,9 @@
 **/*.rs.bk
 *.orig
 
-# --- generated whitepaper PDF (regenerate: python3 scripts/build_pdf.py) ---
+# --- PDFs: ignore strays, but track the whitepaper (README hero links it) ---
 *.pdf
+!Daimon-RESEARCH.pdf
 
 # --- generated WebGPU bundle (regenerate: ./scripts/build-web.sh) ---
 crates/daimon-game/web/daimon_game.js
