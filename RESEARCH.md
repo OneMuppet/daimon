@@ -134,7 +134,8 @@ language model in production; an offline heuristic in the deterministic build).
 The mechanisms below attach to this spine. Code: `daimon-core` (types),
 `daimon-mind` (cognition), `daimon-game` (a 2D embodiment + the harness).
 
-```
+```figure:cognitive-cycle
+ASCII fallback (rendered as a vector flowchart by scripts/build_pdf.py):
                  ┌──────────────────── one tick ────────────────────┐
    world ──▶ perceive ─▶ appraise ─▶ reflex ─▶ decide ─▶ plan ─▶ act ─▶ reflect ─▶ world
                  │          │          │   (System-1 arbitration)  │        │
