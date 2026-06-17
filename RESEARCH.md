@@ -41,7 +41,7 @@ appraised emotional life — now extended with **emergent shelter-building** fro
 felt safety need, **fear of own death and theory-of-mind-mediated grief**, an
 **open-ended seasonal world** the agent must provision against, and a **learned,
 evolved-plastic neural overlay** (the architecture's first neural net) that we
-evaluate *honestly* and report as a null result. Forty-seven pre-registered
+evaluate *honestly* and report as a null result. Forty-five pre-registered
 acceptance criteria, each an ablation or controlled experiment, all pass
 deterministically. The capstone result: the
 self-improving loop **evolves champions that beat the hand-tuned baseline** and, in
@@ -960,7 +960,7 @@ these are its fuel.
 
 We name the threats so a reader can weigh them.
 
-- **Construct validity (does the harness measure believability?).** The 47 criteria
+- **Construct validity (does the harness measure believability?).** The 45 criteria
   are *proxies* — survival, decision balance, dialogue variety, emotional
   responsiveness, mortality salience, grief, winter provisioning, etc. — not human
   ratings. We make no claim that passing them equals being judged "alive" by a
@@ -1061,7 +1061,7 @@ Deterministic by construction (one seeded SplitMix64 PRNG; no wall-clock, no
 threads in cognition). Reproduce the entire evaluation:
 
 ```bash
-cargo run -p daimon-game --example believability --release   # all 47 criteria
+cargo run -p daimon-game --example believability --release   # all 45 criteria
 cargo run -p daimon-game --example proofs        --release   # the 9 machine-checked theorems (§4.5; PROOFS.md)
 cargo run -p daimon-game --example autogenesis   --release   # the self-improvement loop
 cargo run -p daimon-game --example benchmark     --release   # evolvability/perf/zero-shot (§5.1)
