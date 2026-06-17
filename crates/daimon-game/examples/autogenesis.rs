@@ -33,6 +33,13 @@ const GENE_NAMES: [&str; N_GENES] = [
     "stigmergy",
     "affect_mod",
     "can_fight",
+    "can_build",
+    "can_die",
+    "can_grieve",
+    "can_provision",
+    "nn_enabled",
+    "nn_learn_rate",
+    "nn_modulation",
 ];
 
 fn show(label: &str, f: &Fitness) {

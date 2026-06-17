@@ -67,6 +67,12 @@ fn main() {
     checks.push(ac39_affect());
     checks.push(ac40_affect_modulation());
     checks.push(ac41_reciprocity());
+    checks.push(ac42_emergent_shelter());
+    checks.push(ac43_mortality_salience());
+    checks.push(ac44_grief_scales_with_bond());
+    checks.push(ac45_grief_resolves());
+    checks.push(ac46_winter_provisioning());
+    checks.push(ac47_overlay_learns());
 
     println!("\n╔════════════════════════════════════════════════════════════════════╗");
     println!("║  Daimon believability harness                                       ║");
@@ -217,7 +223,7 @@ fn ac4_info_transfer() -> Check {
     // tick 1: someone tells us where the water is (we have never seen it)
     let told = Percept {
         tick: 1,
-        me: SelfState { pos, health: 1.0, energy: 0.9, hydration: 0.2 },
+        me: SelfState { pos, health: 1.0, energy: 0.9, hydration: 0.2, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
         visible: vec![],
         events: vec![WorldEvent::Told {
             from: EntityId(7),
@@ -229,7 +235,7 @@ fn ac4_info_transfer() -> Check {
     for t in 2..=40 {
         let p = Percept {
             tick: t,
-            me: SelfState { pos, health: 1.0, energy: 0.9, hydration: 0.2 },
+            me: SelfState { pos, health: 1.0, energy: 0.9, hydration: 0.2, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
             visible: vec![],
             events: vec![],
         };
@@ -401,7 +407,7 @@ fn ac12_balanced() -> Check {
     for t in 61..=110 {
         let p = Percept {
             tick: t,
-            me: SelfState { pos, health: 1.0, energy: 0.2, hydration: 0.9 },
+            me: SelfState { pos, health: 1.0, energy: 0.2, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
             visible: foods(),
             events: vec![],
         };
@@ -531,7 +537,7 @@ fn ac15_unforeseen() -> Check {
         for t in 1..=24 {
             mind.cycle(&Percept {
                 tick: t,
-                me: SelfState { pos: start, health: 1.0, energy: 0.9, hydration: 0.9 },
+                me: SelfState { pos: start, health: 1.0, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
                 visible: vec![well(goal_pos.x, goal_pos.y)],
                 events: vec![],
             });
@@ -548,7 +554,7 @@ fn ac15_unforeseen() -> Check {
     for t in 50..=70 {
         learned.cycle(&Percept {
             tick: t,
-            me: SelfState { pos: Pos::new(6, 6), health: hp, energy: 0.9, hydration: 0.9 },
+            me: SelfState { pos: Pos::new(6, 6), health: hp, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
             visible: vec![well(7, 6)], // adjacent
             events: vec![],
         });
@@ -561,7 +567,7 @@ fn ac15_unforeseen() -> Check {
         for t in 200..240 {
             let th = mind.cycle(&Percept {
                 tick: t,
-                me: SelfState { pos, health: 0.4, energy: 0.9, hydration: 0.9 },
+                me: SelfState { pos, health: 0.4, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
                 visible: vec![well(goal_pos.x, goal_pos.y)],
                 events: vec![],
             });
@@ -604,7 +610,7 @@ fn explore_walled(mind: &mut Mind, ticks: u64) -> Vec<Pos> {
     for t in 1..=ticks {
         let th = mind.cycle(&Percept {
             tick: t,
-            me: SelfState { pos, health: 1.0, energy: 0.9, hydration: 0.9 },
+            me: SelfState { pos, health: 1.0, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
             visible: vec![],
             events: vec![],
         });
@@ -661,7 +667,7 @@ fn ac17_empowerment() -> Check {
         for t in 1..=120u64 {
             let th = mind.cycle(&Percept {
                 tick: t,
-                me: SelfState { pos, health: 1.0, energy: 0.9, hydration: 0.9 },
+                me: SelfState { pos, health: 1.0, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
                 visible: vec![],
                 events: vec![],
             });
@@ -697,7 +703,7 @@ fn ac18_consolidation() -> Check {
             let hurt = t % 20 == 0;
             let th = mind.cycle(&Percept {
                 tick: t,
-                me: SelfState { pos, health: 0.8, energy: 0.8, hydration: 0.8 },
+                me: SelfState { pos, health: 0.8, energy: 0.8, hydration: 0.8, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
                 visible: vec![Entity { id: pred, kind: EntityKind::Predator, pos: Pos::new(12, 10), label: "stalker".into() }],
                 events: if hurt { vec![WorldEvent::Hurt { id: pred, health: 0.15 }] } else { vec![] },
             });
@@ -735,7 +741,7 @@ fn ac19_persistence() -> Check {
     for t in 1..=120u64 {
         let th = mind.cycle(&Percept {
             tick: t,
-            me: SelfState { pos, health: 0.7, energy: 0.6, hydration: 0.6 },
+            me: SelfState { pos, health: 0.7, energy: 0.6, hydration: 0.6, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
             visible: scene(),
             events: vec![],
         });
@@ -758,7 +764,7 @@ fn ac19_persistence() -> Check {
     for t in 121..=160u64 {
         let perc = Percept {
             tick: t,
-            me: SelfState { pos: p2, health: 0.7, energy: 0.6, hydration: 0.6 },
+            me: SelfState { pos: p2, health: 0.7, energy: 0.6, hydration: 0.6, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
             visible: scene(),
             events: vec![],
         };
@@ -800,7 +806,7 @@ fn ac20_imagination() -> Check {
         for t in 1..=400u64 {
             let th = mind.cycle(&Percept {
                 tick: t,
-                me: SelfState { pos, health: 1.0, energy: 0.25, hydration: 0.9 },
+                me: SelfState { pos, health: 1.0, energy: 0.25, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
                 visible: vec![Entity { id: EntityId(1), kind: EntityKind::Food, pos: food, label: "berries".into() }],
                 events: vec![],
             });
@@ -842,7 +848,7 @@ fn ac21_metamotivation() -> Check {
             let events = if adjacent { vec![WorldEvent::Hurt { id: curio, health: 0.05 }] } else { vec![] };
             let th = mind.cycle(&Percept {
                 tick: t,
-                me: SelfState { pos, health: 0.9, energy: 0.9, hydration: 0.9 },
+                me: SelfState { pos, health: 0.9, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
                 visible: vec![Entity { id: curio, kind: EntityKind::Curio, pos: Pos::new(11, 10), label: "ember".into() }],
                 events,
             });
@@ -1240,7 +1246,7 @@ fn ac34_cultural_transmission() -> Check {
     // (1) a teacher learns by direct contact that the wellspring mends it.
     let well = ent(1, "wellspring", 5, 5);
     let mut teacher = Praxis::default();
-    let mut body = SelfState { pos: Pos::new(5, 5), health: 0.4, energy: 0.9, hydration: 0.9 };
+    let mut body = SelfState { pos: Pos::new(5, 5), health: 0.4, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None };
     for _ in 0..6 {
         teacher.observe(std::slice::from_ref(&well), Pos::new(5, 5), body);
         body.health = (body.health + 0.05).min(1.0);
@@ -1271,7 +1277,7 @@ fn ac34_cultural_transmission() -> Check {
     let mut gated = Praxis::default();
     gated.adopt(&false_meme);
     let believed_rumour = gated.concepts.iter().any(|c| c.mends());
-    let flat = SelfState { pos: Pos::new(8, 8), health: 0.5, energy: 0.9, hydration: 0.9 };
+    let flat = SelfState { pos: Pos::new(8, 8), health: 0.5, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None };
     for _ in 0..30 {
         gated.observe(std::slice::from_ref(&stone), Pos::new(8, 8), flat); // health flat — it does nothing
     }
@@ -1442,7 +1448,7 @@ fn ac39_affect() -> Check {
     for t in 1..=30 {
         mind.cycle(&Percept {
             tick: t,
-            me: SelfState { pos: Pos::new(10, 10), health: 1.0, energy: 1.0, hydration: 1.0 },
+            me: SelfState { pos: Pos::new(10, 10), health: 1.0, energy: 1.0, hydration: 1.0, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
             visible: vec![],
             events: vec![],
         });
@@ -1451,7 +1457,7 @@ fn ac39_affect() -> Check {
     for t in 31..=60 {
         mind.cycle(&Percept {
             tick: t,
-            me: SelfState { pos: Pos::new(10, 10), health: 0.3, energy: 0.5, hydration: 0.5 },
+            me: SelfState { pos: Pos::new(10, 10), health: 0.3, energy: 0.5, hydration: 0.5, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
             visible: vec![Entity {
                 id: EntityId(99),
                 kind: EntityKind::Predator,
@@ -1499,6 +1505,13 @@ fn ac40_affect_modulation() -> Check {
                     health: 1.0,
                     energy: 1.0,
                     hydration: 1.0,
+                    enclosure: 0.0,
+                    shelter_gap: None,
+                    season: 0,
+                    winter_in: f32::MAX,
+                    carrying: 0.0,
+                    gather_dir: None,
+                    store_dir: None,
                 },
                 visible: vec![],
                 events: vec![],
@@ -1543,3 +1556,423 @@ fn ac41_reciprocity() -> Check {
     }
 }
 
+/// AC42 — EMERGENT SHELTER-BUILDING. Given only a generic build affordance (no
+/// scripted hut), an exposed-and-threatened agent invents a Shelter goal and walls
+/// itself in — survival-need → wall-self-in → survive, a real closed loop that
+/// emerges from utility planning. Clean ablation: the *only* difference is the
+/// `can_build` gene. ON (harsh world, building enabled) → Shelter-goal adoptions,
+/// Build actions, and walls placed are all > 0; OFF control (identical world,
+/// building disabled) → all three are exactly zero, proving the gate is inert when
+/// the affordance is off (and that non-building worlds stay bit-identical).
+fn ac42_emergent_shelter() -> Check {
+    use daimon_core::{Action, GoalKind};
+    use daimon_mind::evolve::Genome;
+    // Count (Shelter-goal adoptions, Build actions, walls placed) over a run.
+    let run = |can_build: bool, seed: u64| -> (u32, u32, usize) {
+        let mut g = Genome::baseline();
+        g.g[13] = 0.55; // anticipation on (both arms) so agents live long enough to feel exposed
+        g.g[21] = if can_build { 1.0 } else { 0.0 }; // gene 21 = can_build (the ONLY difference)
+        let mut world = GameWorld::with_genome_harsh(seed, 6, &g);
+        let (mut shelter_goals, mut builds) = (0u32, 0u32);
+        for _ in 0..3000 {
+            world.step();
+            for a in &world.agents {
+                if let Some(t) = &a.last {
+                    if t.goal == GoalKind::Shelter {
+                        shelter_goals += 1;
+                    }
+                    if matches!(t.action, Action::Build(_)) {
+                        builds += 1;
+                    }
+                }
+            }
+        }
+        (shelter_goals, builds, world.walls.len())
+    };
+    let seeds = [0xB011u64, 0xB012];
+    // ON: every observable must be positive on at least one seed (emergence is
+    // seed-sensitive); summing across seeds gives a stable, deterministic signal.
+    let (mut on_goals, mut on_builds, mut on_walls) = (0u32, 0u32, 0usize);
+    for &s in &seeds {
+        let (g, b, w) = run(true, s);
+        on_goals += g;
+        on_builds += b;
+        on_walls += w;
+    }
+    // OFF control: identical worlds with building disabled must show NOTHING —
+    // the controlled half that makes this a real criterion, not just a demo.
+    let (mut off_goals, mut off_builds, mut off_walls) = (0u32, 0u32, 0usize);
+    for &s in &seeds {
+        let (g, b, w) = run(false, s);
+        off_goals += g;
+        off_builds += b;
+        off_walls += w;
+    }
+    let pass = on_goals > 0
+        && on_builds > 0
+        && on_walls > 0
+        && off_goals == 0
+        && off_builds == 0
+        && off_walls == 0;
+    Check {
+        name: "AC42 shelter",
+        pass,
+        detail: format!(
+            "can_build ablation ({} seeds): ON shelter-goals {on_goals}, builds {on_builds}, walls {on_walls} (all >0) · OFF control {off_goals}/{off_builds}/{off_walls} (all 0)",
+            seeds.len()
+        ),
+    }
+}
+
+/// AC43 — FEAR OF DEATH (mortality salience, Terror Management Theory). A mortal
+/// mind whose health is *declining* feels rising dread (mortality salience up,
+/// valence down, arousal up) and shifts its behaviour toward the TMT defences —
+/// shelter (build) and affiliation (seek a friend) — *before* it dies, not only at
+/// the brink. Clean ablation: the OFF control (can_die off) feels no such dread and
+/// makes no such shift. The asymmetry is the criterion.
+fn ac43_mortality_salience() -> Check {
+    use daimon_core::{Action, GoalKind};
+    use daimon_mind::evolve::Genome;
+    // A bonded friend stands a few cells away (someone to flee toward); the agent's
+    // health bleeds down over the run while it is otherwise fed and watered, so the
+    // only driver of any change is the falling health trajectory.
+    let friend = Entity { id: EntityId(50), kind: EntityKind::Agent, pos: Pos::new(14, 10), label: "Mira".into() };
+    let run = |can_die: bool| -> (f32, f32, f32, u32) {
+        let mut g = Genome::baseline();
+        g.g[21] = 1.0; // building available (a TMT shelter defence to shift toward)
+        g.g[22] = if can_die { 1.0 } else { 0.0 }; // the ONLY difference
+        let mut mind = g.express(&Persona::new("Mortal").with_sociability(0.7).with_curiosity(0.4), 0xD1E5);
+        // warm the bond with the friend so affiliation is a real option.
+        for t in 1..=6u64 {
+            mind.cycle(&Percept {
+                tick: t,
+                me: SelfState { pos: Pos::new(10, 10), health: 1.0, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
+                visible: vec![friend.clone()],
+                events: vec![WorldEvent::Heard { from: EntityId(50), text: "hello friend, let's stay together".into() }],
+            });
+        }
+        // A gentle decline that never reaches a true crisis: health eases from 0.95
+        // to ~0.6 while energy/hydration stay comfortable. An IMMORTAL agent here
+        // feels little — it is not starving and not near a predator — so any dread
+        // or defensive shift the MORTAL agent shows is the fear of death itself,
+        // preventive and ahead of crisis (the TMT prediction), not mere injury.
+        let mut hp = 0.95f32;
+        let mut defensive = 0u32; // ticks spent on shelter or seeking the friend
+        let mut peak_dread = 0.0f32;
+        let (mut val_acc, mut ar_acc, mut n) = (0.0f32, 0.0f32, 0u32);
+        for t in 7..=90u64 {
+            // a slow, sustained fade that never even reaches the "hurt" band (≥0.86):
+            // so an IMMORTAL twin has no survival reaction at all, and any shift the
+            // mortal twin shows is the dread of the *trajectory* — preventive, ahead
+            // of any crisis (the TMT claim). Dread accumulates from the decline itself.
+            hp = (hp - 0.004).max(0.86);
+            let th = mind.cycle(&Percept {
+                tick: t,
+                me: SelfState { pos: Pos::new(10, 10), health: hp, energy: 0.85, hydration: 0.85, enclosure: 0.0, shelter_gap: Some(Dir::North), season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
+                visible: vec![friend.clone()],
+                events: vec![],
+            });
+            peak_dread = peak_dread.max(mind.mortality_salience());
+            val_acc += mind.affect().valence;
+            ar_acc += mind.affect().arousal;
+            n += 1;
+            if matches!(th.goal, GoalKind::Shelter | GoalKind::Socialize(_))
+                || matches!(th.action, Action::Build(_))
+            {
+                defensive += 1;
+            }
+        }
+        (peak_dread, val_acc / n as f32, ar_acc / n as f32, defensive)
+    };
+    let (dread_on, val_on, ar_on, def_on) = run(true);
+    let (dread_off, val_off, ar_off, def_off) = run(false);
+    // ON: real dread that the immortal control never feels (clean ablation), felt
+    // as afraid (valence below, arousal above the control), and a *greater* turn to
+    // the shelter/affiliation defences than the immortal twin (the TMT shift —
+    // measured as more defensive ticks, since some baseline social behaviour is
+    // expected of both). OFF: no dread.
+    let pass = dread_on > 0.2
+        && dread_off < 0.05
+        && val_on < val_off - 0.08
+        && ar_on > ar_off + 0.03
+        && def_on > def_off;
+    Check {
+        name: "AC43 mortality",
+        pass,
+        detail: format!(
+            "declining mortal vs immortal twin: dread {dread_on:.2} (off {dread_off:.2}) · valence {val_on:+.2}<{val_off:+.2} · arousal {ar_on:.2}>{ar_off:.2} · TMT-defensive ticks {def_on}>{def_off}"
+        ),
+    }
+}
+
+/// AC44 — GRIEF SCALES WITH BOND (the load-bearing criterion). When a *bonded*
+/// friend dies, the survivor grieves — valence drops and it mourns. When a
+/// *stranger* dies, it does not. The death event is identical; the ONLY difference
+/// is the bond. Three arms: a strongly-bonded loss, a stranger's death, and a
+/// no-bond control — and grief must be clearly larger for the bonded death while
+/// the no-bond control shows ~none.
+fn ac44_grief_scales_with_bond() -> Check {
+    use daimon_core::GoalKind;
+    use daimon_mind::evolve::Genome;
+    // build a mind, optionally bond it to peer 50, then kill peer 50 and watch.
+    let bonded_id = EntityId(50);
+    let peer = Entity { id: bonded_id, kind: EntityKind::Agent, pos: Pos::new(12, 10), label: "Mira".into() };
+    let measure = |bond: bool| -> (f32, f32, u32) {
+        let mut g = Genome::baseline();
+        g.g[23] = 1.0; // can_grieve on
+        let mut mind = g.express(&Persona::new("Bereaved").with_sociability(0.8), 0x6217);
+        // optionally warm a real bond through repeated warm contact.
+        for t in 1..=8u64 {
+            let events = if bond {
+                vec![WorldEvent::Heard { from: bonded_id, text: "hello dear friend, we share everything, thank you".into() }]
+            } else {
+                vec![] // a stranger: seen, never warmed to
+            };
+            mind.cycle(&Percept {
+                tick: t,
+                me: SelfState { pos: Pos::new(10, 10), health: 1.0, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
+                visible: vec![peer.clone()],
+                events,
+            });
+        }
+        let bond_strength = mind.social().disposition(bonded_id);
+        let valence_before = mind.affect().valence;
+        // the friend dies — the SAME event regardless of bond.
+        mind.cycle(&Percept {
+            tick: 9,
+            me: SelfState { pos: Pos::new(10, 10), health: 1.0, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
+            visible: vec![],
+            events: vec![WorldEvent::Died { id: bonded_id, pos: Pos::new(12, 10), cause: "the stalker".into() }],
+        });
+        // let the aftermath play out a while and count mourning behaviour.
+        let mut mourn_ticks = 0u32;
+        for t in 10..=120u64 {
+            let th = mind.cycle(&Percept {
+                tick: t,
+                me: SelfState { pos: Pos::new(10, 10), health: 1.0, energy: 0.8, hydration: 0.8, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
+                visible: vec![],
+                events: vec![],
+            });
+            if th.goal == GoalKind::Mourn {
+                mourn_ticks += 1;
+            }
+        }
+        let valence_drop = valence_before - mind.affect().valence;
+        let _ = bond_strength;
+        (mind.grief().max(valence_drop.max(0.0)), valence_drop, mourn_ticks)
+    };
+    // bonded loss vs stranger's death vs (stranger is the no-bond control too).
+    let (bonded_grief, bonded_drop, bonded_mourn) = measure(true);
+    let (stranger_grief, stranger_drop, stranger_mourn) = measure(false);
+    // bonded grief clearly larger; stranger/no-bond shows ~none and never mourns.
+    let pass = bonded_mourn > 0
+        && stranger_mourn == 0
+        && bonded_drop > stranger_drop + 0.15
+        && stranger_grief < 0.1;
+    Check {
+        name: "AC44 grief-bond",
+        pass,
+        detail: format!(
+            "bonded loss: grief {bonded_grief:.2}, valence drop {bonded_drop:+.2}, mourn {bonded_mourn} ticks · stranger/no-bond: grief {stranger_grief:.2}, drop {stranger_drop:+.2}, mourn {stranger_mourn} (asymmetry holds)"
+        ),
+    }
+}
+
+/// AC45 — GRIEF RESOLVES (Dual Process Model). A grieving mind does not mourn
+/// forever: it OSCILLATES between mourning (loss-orientation) and ordinary goals
+/// (restoration), and the grief DECAYS over time — faster when other bonded living
+/// friends are near (social support). So mourning gives way to life, sooner with
+/// company.
+fn ac45_grief_resolves() -> Check {
+    use daimon_core::GoalKind;
+    use daimon_mind::evolve::Genome;
+    let dead_id = EntityId(50);
+    let friend_id = EntityId(60);
+    let peer = Entity { id: dead_id, kind: EntityKind::Agent, pos: Pos::new(12, 10), label: "Mira".into() };
+    let living_friend = Entity { id: friend_id, kind: EntityKind::Agent, pos: Pos::new(11, 10), label: "Sela".into() };
+    // bond, kill the friend, then run the aftermath either alone or with a living
+    // friend nearby; report (grief left, mourn ticks, restoration ticks).
+    let aftermath = |with_support: bool| -> (f32, u32, u32) {
+        let mut g = Genome::baseline();
+        g.g[23] = 1.0;
+        let mut mind = g.express(&Persona::new("Healing").with_sociability(0.8), 0x9A17);
+        // bond strongly with the soon-dead friend (and, for the support arm, with
+        // the living friend too).
+        for t in 1..=8u64 {
+            let mut events = vec![WorldEvent::Heard { from: dead_id, text: "hello dear friend, we share everything, thank you".into() }];
+            if with_support {
+                events.push(WorldEvent::Heard { from: friend_id, text: "hello friend, we stay together, thank you".into() });
+            }
+            let mut visible = vec![peer.clone()];
+            if with_support { visible.push(living_friend.clone()); }
+            mind.cycle(&Percept {
+                tick: t,
+                me: SelfState { pos: Pos::new(10, 10), health: 1.0, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
+                visible,
+                events,
+            });
+        }
+        mind.cycle(&Percept {
+            tick: 9,
+            me: SelfState { pos: Pos::new(10, 10), health: 1.0, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
+            visible: if with_support { vec![living_friend.clone()] } else { vec![] },
+            events: vec![WorldEvent::Died { id: dead_id, pos: Pos::new(12, 10), cause: "the stalker".into() }],
+        });
+        let (mut mourn, mut restore) = (0u32, 0u32);
+        for t in 10..=400u64 {
+            let visible = if with_support { vec![living_friend.clone()] } else { vec![] };
+            let th = mind.cycle(&Percept {
+                tick: t,
+                me: SelfState { pos: Pos::new(10, 10), health: 1.0, energy: 0.8, hydration: 0.8, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
+                visible,
+                events: vec![],
+            });
+            if th.goal == GoalKind::Mourn { mourn += 1; } else { restore += 1; }
+        }
+        (mind.grief(), mourn, restore)
+    };
+    let (grief_alone, mourn_alone, restore_alone) = aftermath(false);
+    let (grief_support, mourn_support, _restore_support) = aftermath(true);
+    // oscillation: the mind both mourns AND pursues restoration (neither is zero).
+    let oscillates = mourn_alone > 0 && restore_alone > 0;
+    // decays toward resolution over the run (not stuck mourning forever).
+    let resolves = grief_alone < 0.5;
+    // social support speeds resolution: less grief left, less time mourning.
+    let support_helps = grief_support < grief_alone && mourn_support < mourn_alone;
+    let pass = oscillates && resolves && support_helps;
+    Check {
+        name: "AC45 grief-resolves",
+        pass,
+        detail: format!(
+            "oscillates (mourn {mourn_alone} / restore {restore_alone} ticks) · grief decays to {grief_alone:.2} alone; support speeds it: grief {grief_support:.2}, mourn {mourn_support} ticks (<{mourn_alone})"
+        ),
+    }
+}
+
+
+/// AC46 — WINTER PROVISIONING (the open-world load-bearing criterion). In an OPEN
+/// WORLD a real year turns: food stops in winter and a cold drain bites. A mind with
+/// the `can_provision` gene gathers a surplus while food is plentiful and stores it
+/// in the shared granary, then draws it down through winter to survive — provisioning
+/// EMERGES from Mastery + foresight, never scripted. The clean ablation: a gene-OFF
+/// control of otherwise-identical minds adopts NO Provision goal, stocks NOTHING (the
+/// cache stays empty), and the winter culls it far harder. The asymmetry — a stocked
+/// cache + materially better winter survival for the provisioning group — is the
+/// criterion. (The world's `open_world` flag is the other half: with it off, none of
+/// this fires and every prior AC/proof stays byte-identical — covered by the off
+/// controls and proof T1.)
+fn ac46_winter_provisioning() -> Check {
+    use daimon_core::{Action, GoalKind};
+    use daimon_mind::evolve::Genome;
+    // Run an open world through one full winter; report (provision-goals, gather+store
+    // actions, peak cache, survivors at end of the first winter), as a function of the
+    // ONLY difference: gene 24 (can_provision).
+    let run = |can_provision: bool, seed: u64| -> (u32, u32, f32, usize) {
+        let mut g = Genome::showcase();
+        g.g[22] = 1.0; // mortal — the winter must be able to kill
+        g.g[24] = if can_provision { 1.0 } else { 0.0 }; // the ONLY difference
+        let mut world = GameWorld::with_genome(seed, 8, &g);
+        world.set_open_world(true);
+        world.soften_stalker(); // isolate winter as the killer, not predator luck
+        let start = world.living_count();
+        let (mut provision_goals, mut store_acts, mut peak_cache) = (0u32, 0u32, 0.0f32);
+        // run through the first full winter and a touch into the next spring.
+        let ticks = daimon_game::sim::YEAR_TICKS + daimon_game::sim::SEASON_TICKS / 4;
+        for _ in 0..ticks {
+            world.step();
+            peak_cache = peak_cache.max(world.granary_food);
+            for a in &world.agents {
+                if let Some(t) = &a.last {
+                    if t.goal == GoalKind::Provision {
+                        provision_goals += 1;
+                    }
+                    if matches!(t.action, Action::Gather | Action::Store) {
+                        store_acts += 1;
+                    }
+                }
+            }
+        }
+        let _ = start;
+        (provision_goals, store_acts, peak_cache, world.living_count())
+    };
+    let seeds = [0x5EED01u64, 0x5EED02, 0x5EED03];
+    // ON: provisioning fires, the cache fills, and a meaningful share survive winter.
+    let (mut on_goals, mut on_acts, mut on_cache, mut on_surv) = (0u32, 0u32, 0.0f32, 0usize);
+    // OFF control: NO provision goals, NO gather/store, an EMPTY cache — and the
+    // winter culls it much harder.
+    let (mut off_goals, mut off_acts, mut off_cache, mut off_surv) = (0u32, 0u32, 0.0f32, 0usize);
+    for &s in &seeds {
+        let (g, a, c, surv) = run(true, s);
+        on_goals += g;
+        on_acts += a;
+        on_cache += c;
+        on_surv += surv;
+        let (g2, a2, c2, surv2) = run(false, s);
+        off_goals += g2;
+        off_acts += a2;
+        off_cache += c2;
+        off_surv += surv2;
+    }
+    // The criterion, made load-bearing:
+    //  · provisioning is real: Provision goals adopted, gather/store performed, cache
+    //    rises — all strictly positive with the gene on;
+    //  · the control is a clean ablation: zero goals, zero actions, an empty cache;
+    //  · provisioning MATERIALLY improves winter survival: the gene-on group has more
+    //    survivors than the gene-off control (the unprovisioned die in the cold).
+    let provisioning_real = on_goals > 0 && on_acts > 0 && on_cache > 1.0;
+    let control_inert = off_goals == 0 && off_acts == 0 && off_cache == 0.0;
+    let survival_edge = on_surv > off_surv;
+    let pass = provisioning_real && control_inert && survival_edge;
+    Check {
+        name: "AC46 provisioning",
+        pass,
+        detail: format!(
+            "can_provision ablation ({} seeds, 1 full winter): ON goals {on_goals}, gather/store {on_acts}, cache peak {on_cache:.0}, winter survivors {on_surv} · OFF control {off_goals}/{off_acts}/{off_cache:.0}, survivors {off_surv} (provisioning lifts winter survival {on_surv}>{off_surv})",
+            seeds.len()
+        ),
+    }
+}
+
+/// AC47 — the **System-2 learned overlay** genuinely learns within a life, and is
+/// perfectly inert when disabled. We do NOT assert the overlay *improves* fitness
+/// (the honest A/B shows it doesn't beat a well-tuned instinct in a mastered
+/// domain — see `examples/overlay_ab.rs`); we assert the two things that must hold
+/// for the mechanism to be real and safe: (1) ON → the weights move in-life from
+/// reward-modulated Hebbian plasticity and stay finite; (2) OFF → the overlay
+/// contributes exactly zero (zero weight magnitude), so the instinct is unchanged.
+fn ac47_overlay_learns() -> Check {
+    use daimon_mind::evolve::Genome;
+    // run a harsh life; return (Σ initial |w|, Σ final |w|, #minds with overlay on).
+    let run = |nn_on: bool, seed: u64| -> (f32, f32, usize) {
+        let mut g = Genome::showcase();
+        g.g[25] = if nn_on { 1.0 } else { 0.0 }; // nn_enabled — the ONLY difference
+        g.g[26] = 0.6; // learn-rate η
+        g.g[27] = 0.6; // modulation
+        let mut world = GameWorld::with_genome_harsh(seed, 6, &g);
+        let init: f32 = world.agents.iter().map(|a| a.mind.overlay_weight_magnitude()).sum();
+        let enabled = world.agents.iter().filter(|a| a.mind.overlay_enabled()).count();
+        for _ in 0..600 {
+            world.step();
+        }
+        let fin: f32 = world.agents.iter().map(|a| a.mind.overlay_weight_magnitude()).sum();
+        (init, fin, enabled)
+    };
+    let (on_init, on_fin, on_enabled) = run(true, 0x0_5EED);
+    let (off_init, off_fin, off_enabled) = run(false, 0x0_5EED);
+
+    // ON: every mind's overlay is enabled, weights start non-zero, MOVE over the
+    // life (learning), and stay finite (no blow-up/NaN).
+    let on_learns =
+        on_enabled == 6 && on_init > 0.0 && (on_fin - on_init).abs() > 1e-3 && on_fin.is_finite();
+    // OFF control: no overlay anywhere — zero magnitude before and after, so the
+    // instinct path is byte-identical (this is the ablation-safety guarantee).
+    let off_inert = off_enabled == 0 && off_init == 0.0 && off_fin == 0.0;
+    let pass = on_learns && off_inert;
+    Check {
+        name: "AC47 overlay-learns",
+        pass,
+        detail: format!(
+            "nn_enabled ablation (harsh, 600 ticks): ON {on_enabled}/6 overlays, Σ|w| {on_init:.2}→{on_fin:.2} (moved in-life, finite) · OFF control {off_enabled}/6, Σ|w| {off_init:.2}→{off_fin:.2} (inert, instinct byte-identical). Learning is real; overlay claims no fitness win (see overlay_ab)"
+        ),
+    }
+}

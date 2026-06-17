@@ -41,6 +41,7 @@ pub mod imagine;
 pub mod language;
 pub mod llm;
 pub mod mind;
+pub mod overlay;
 pub mod persona;
 pub mod planner;
 pub mod praxis;

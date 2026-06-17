@@ -208,7 +208,7 @@ fn unforeseen_task(seed: u64) -> (i32, i32) {
         for t in 1..=24 {
             m.cycle(&Percept {
                 tick: t,
-                me: SelfState { pos: start, health: 1.0, energy: 0.9, hydration: 0.9 },
+                me: SelfState { pos: start, health: 1.0, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
                 visible: vec![well(goal.x, goal.y)],
                 events: vec![],
             });
@@ -223,7 +223,7 @@ fn unforeseen_task(seed: u64) -> (i32, i32) {
     for t in 50..=70 {
         learned.cycle(&Percept {
             tick: t,
-            me: SelfState { pos: start, health: hp, energy: 0.9, hydration: 0.9 },
+            me: SelfState { pos: start, health: hp, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
             visible: vec![well(7, 6)],
             events: vec![],
         });
@@ -234,7 +234,7 @@ fn unforeseen_task(seed: u64) -> (i32, i32) {
         for t in 200..240 {
             let th = m.cycle(&Percept {
                 tick: t,
-                me: SelfState { pos, health: 0.4, energy: 0.9, hydration: 0.9 },
+                me: SelfState { pos, health: 0.4, energy: 0.9, hydration: 0.9, enclosure: 0.0, shelter_gap: None, season: 0, winter_in: f32::MAX, carrying: 0.0, gather_dir: None, store_dir: None },
                 visible: vec![well(goal.x, goal.y)],
                 events: vec![],
             });

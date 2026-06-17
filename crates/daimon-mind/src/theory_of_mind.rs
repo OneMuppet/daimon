@@ -32,6 +32,18 @@ pub struct AgentModel {
     pub last_pos: Option<Pos>,
     pub last_seen: u64,
     pub interactions: u32,
+    /// CONTINUING BOND: set when we learn this peer has died. We do NOT purge the
+    /// model — the relationship outlives the person, so the survivor can still
+    /// reminisce. `None` while they live; `Some(tick)` once gone.
+    #[serde(default)]
+    pub death_tick: Option<u64>,
+}
+
+impl AgentModel {
+    /// Whether we believe this peer is dead (the continuing bond is to a gone friend).
+    pub fn is_gone(&self) -> bool {
+        self.death_tick.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -64,7 +76,42 @@ impl TheoryOfMind {
                 last_pos: Some(e.pos),
                 last_seen: tick,
                 interactions: 0,
+                death_tick: None,
             });
+    }
+
+    /// Mark a peer as dead at `tick`, keeping its model (the continuing bond). The
+    /// bond strength at time of death is its `disposition` — returned so the caller
+    /// can scale grief by how close they were. Returns `None` if we never knew them.
+    pub fn mark_dead(&mut self, id: EntityId, tick: u64) -> Option<f32> {
+        let m = self.models.get_mut(&id)?;
+        if m.death_tick.is_none() {
+            m.death_tick = Some(tick);
+        }
+        Some(m.disposition)
+    }
+
+    /// The bond strength (disposition) we hold toward a peer, dead or alive.
+    pub fn bond(&self, id: EntityId) -> f32 {
+        self.disposition(id)
+    }
+
+    /// A still-living, bonded friend within `radius` of `pos` — social support that
+    /// speeds grief's resolution. Returns true if any such friend is near.
+    pub fn living_friend_near(&self, pos: Pos, radius: i32, bond_min: f32) -> bool {
+        self.models.values().any(|m| {
+            !m.is_gone()
+                && m.disposition >= bond_min
+                && m.last_pos.map(|p| p.manhattan(pos) <= radius).unwrap_or(false)
+        })
+    }
+
+    /// The dead friend we were closest to (for reminiscing by name), if any.
+    pub fn dearest_departed(&self) -> Option<&AgentModel> {
+        self.models
+            .values()
+            .filter(|m| m.is_gone())
+            .max_by(|a, b| a.disposition.total_cmp(&b.disposition))
     }
 
     pub fn last_pos(&self, id: EntityId) -> Option<Pos> {
@@ -142,10 +189,13 @@ impl TheoryOfMind {
         self.models.values()
     }
 
-    /// The agent we feel warmest toward, for "I'd like to find a friend" logic.
+    /// The *living* agent we feel warmest toward, for "I'd like to find a friend"
+    /// logic. A dead friend keeps its bond (the continuing bond) but is no one to
+    /// go and find, so the living-only filter is what you want here.
     pub fn friendliest(&self) -> Option<&AgentModel> {
         self.models
             .values()
+            .filter(|m| !m.is_gone())
             .max_by(|a, b| a.disposition.total_cmp(&b.disposition))
     }
 }

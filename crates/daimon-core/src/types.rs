@@ -116,6 +116,45 @@ pub struct SelfState {
     pub health: f32, // 0..1
     pub energy: f32, // 0..1
     pub hydration: f32, // 0..1
+    /// How sheltered the agent's cell feels right now (0 = open ground, 1 = fully
+    /// ringed by walls/edge). The body's spatial sense of safety — high enclosure
+    /// calms the felt threat; low enclosure under a threat drives the urge to wall
+    /// in. Default 0 in a world without walls, so non-building runs are unaffected.
+    #[serde(default)]
+    pub enclosure: f32,
+    /// The single best still-open adjacent side to wall next (the direction whose
+    /// cell, once walled, most increases enclosure), or `None` when fully enclosed
+    /// or no buildable side exists. The agent's sense of *where the gap is* — what
+    /// turns "I feel exposed" into a concrete next block to place.
+    #[serde(default)]
+    pub shelter_gap: Option<Dir>,
+    /// OPEN-WORLD interoception (all inert when the world's `open_world` flag is
+    /// off — defaults below keep non-open worlds bit-identical). The current
+    /// season: `0` Spring · `1` Summer · `2` Autumn · `3` Winter. Default `0`
+    /// (eternal spring) so a closed world feels no seasonal pressure.
+    #[serde(default)]
+    pub season: u8,
+    /// Ticks until winter begins (the foresight faculty reads this so a provisioning
+    /// mind can act *ahead* of the cold). Large default = "winter is never coming".
+    #[serde(default = "winter_never")]
+    pub winter_in: f32,
+    /// Provisions the body is currently carrying (gathered surplus not yet stored).
+    /// Default `0`.
+    #[serde(default)]
+    pub carrying: f32,
+    /// The step toward the nearest harvestable provision source when it is worth
+    /// stocking up, or `None`. The agent's sense of *where to gather*.
+    #[serde(default)]
+    pub gather_dir: Option<Dir>,
+    /// The step toward the village granary when carrying a surplus to store, or
+    /// `None`. The agent's sense of *where the cache is*.
+    #[serde(default)]
+    pub store_dir: Option<Dir>,
+}
+
+/// Serde default for [`SelfState::winter_in`]: a closed world's winter never comes.
+fn winter_never() -> f32 {
+    f32::MAX
 }
 
 impl SelfState {
@@ -125,6 +164,13 @@ impl SelfState {
             health: 1.0,
             energy: 1.0,
             hydration: 1.0,
+            enclosure: 0.0,
+            shelter_gap: None,
+            season: 0,
+            winter_in: f32::MAX,
+            carrying: 0.0,
+            gather_dir: None,
+            store_dir: None,
         }
     }
 }

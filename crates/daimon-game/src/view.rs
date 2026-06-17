@@ -11,7 +11,7 @@ use crate::geo::{self, LitVertex};
 use crate::math::{self, Mat4, Vec3};
 use crate::scene::{Color, Scene, Sky};
 use crate::sim::GameWorld;
-use daimon_core::{Drive, EntityKind};
+use daimon_core::{Drive, EntityKind, Pos};
 use daimon_mind::Process;
 
 const TAU: f32 = std::f32::consts::TAU;
@@ -83,16 +83,29 @@ fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
 }
 
-/// Visual-only climate from world time (never touches the seeded sim). Returns
-/// (season 0..1, weather 0..1, weather_kind 0 rain · 1 snow).
+/// Climate for the renderer. In an OPEN WORLD this is keyed to the *real* sim season
+/// (so the snow falls exactly when food stops and the cold bites — the visuals match
+/// the consequences); otherwise it is the original purely-cosmetic time-of-year cycle
+/// that never touched the seeded sim. Returns (season 0..1, weather 0..1, weather_kind
+/// 0 rain · 1 snow).
 fn climate(world: &GameWorld) -> (f32, f32, f32) {
     let t = world.tick as f32;
-    let season = (t / 6000.0).fract();
     let ph = t * 0.0012;
     let raw = 0.5 + 0.5 * (ph.sin() * 0.6 + (ph * 0.41 + 1.7).sin() * 0.4);
     let weather = ((raw - 0.5) / 0.5).clamp(0.0, 1.0);
-    let winter = (0.62..0.92).contains(&season);
-    (season, weather, if winter { 1.0 } else { 0.0 })
+    if world.open_world {
+        // the real year: season_phase 0..1 maps Spring→Summer→Autumn→Winter; winter is
+        // the last quarter. Heavy snow through winter so the world reads truly cold.
+        let season = world.season_phase();
+        let winter = season >= 0.75;
+        let weather_kind = if winter { 1.0 } else { 0.0 };
+        let weather = if winter { weather.max(0.7) } else { weather };
+        (season, weather, weather_kind)
+    } else {
+        let season = (t / 6000.0).fract();
+        let winter = (0.62..0.92).contains(&season);
+        (season, weather, if winter { 1.0 } else { 0.0 })
+    }
 }
 
 /// The season's colour cast over the whole world (rgb + mix). Winter lays snow.
@@ -101,7 +114,7 @@ fn season_tint(season: f32) -> [f32; 4] {
         [0.42, 0.60, 0.36, 0.12], // spring — fresh green
         [0.55, 0.56, 0.28, 0.08], // summer — warm gold-green
         [0.66, 0.40, 0.16, 0.24], // autumn — amber
-        [0.90, 0.93, 1.02, 0.50], // winter — snow over everything
+        [0.93, 0.96, 1.06, 0.68], // winter — deep snow blanketing everything
     ];
     let s = season.fract() * 4.0;
     let i = s.floor() as usize % 4;
@@ -170,11 +183,40 @@ fn compute_sky(world: &GameWorld, cam: &Camera, aspect: f32) -> Sky {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// HUD payload for the live generational evolution mode. `None` means the normal
+/// village; `Some` replaces the inspector panel with an evolution readout.
+pub struct EvoHud {
+    pub generation: u32,
+    pub alive: usize,
+    pub pop: usize,
+    pub cycle: u64,
+    pub last: Option<crate::evolve_mode::GenStats>,
+}
+
+/// Backwards-compatible entry point (village mode): identical to before.
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     world: &GameWorld,
     cam: &Camera,
     selected: Option<usize>,
     hud: &Hud,
+    sw: f32,
+    sh: f32,
+    time: f32,
+    ui: f32,
+) -> Scene {
+    build_with(world, cam, selected, hud, None, sw, sh, time, ui)
+}
+
+/// Render the world + HUD, optionally with the evolution readout in place of the
+/// village inspector.
+#[allow(clippy::too_many_arguments)]
+pub fn build_with(
+    world: &GameWorld,
+    cam: &Camera,
+    selected: Option<usize>,
+    hud: &Hud,
+    evo: Option<&EvoHud>,
     sw: f32,
     sh: f32,
     time: f32,
@@ -197,13 +239,13 @@ pub fn build(
     };
 
     // ---- hearth: a warm light at the village heart, breathing, strongest at night
-    if !world.agents.is_empty() {
+    if world.living_count() > 0 {
         let (mut mx, mut my) = (0.0f32, 0.0f32);
-        for a in &world.agents {
+        for a in world.living() {
             mx += a.rx;
             my += a.ry;
         }
-        let n = world.agents.len() as f32;
+        let n = world.living_count() as f32;
         let (hx, hz) = (mx / n, my / n);
         let breathe = 0.5 + 0.5 * (time * 0.6).sin();
         let warmth = (1.0 - s.sky.daylight) * 0.7 + 0.18;
@@ -213,6 +255,99 @@ pub fn build(
             (3.6 + 0.4 * breathe) * 1.0,
             Color::hex(0xff7a2a, 0.16 * warmth),
         );
+    }
+
+    // ---- walls: thin stone slabs the minds built for shelter ----
+    // Drawn straight from `world.walls` each frame (walls are few). Each is a THIN
+    // STONE SLAB — full length along one cell axis (~0.9), thin in thickness
+    // (~0.12), ~0.55 tall — *oriented along its wall neighbours* so a row of cells
+    // reads as one continuous thin wall, not a fence of cubes. A wall with an E/W
+    // neighbour runs east-west; an N/S neighbour runs north-south; both or none
+    // falls back to east-west.
+    for wall in &world.walls {
+        let (x, z) = (wall.x as f32, wall.y as f32);
+        let gy = g(x, z);
+        // a faint per-cell wobble in tone + height so the masonry looks hand-laid.
+        let hh = geo::hash_unit(((wall.x as i64) << 20 ^ wall.y as i64) as u64, 3);
+        let tone = 0.86 + 0.12 * hh;
+        let top = 0.52 + 0.06 * hh;
+        let stone = Color([0.52 * tone, 0.50 * tone, 0.45 * tone, 1.0]);
+        // orient along neighbours: prefer east-west if a wall sits E or W.
+        let has = |dx: i32, dy: i32| world.walls.contains(&Pos::new(wall.x + dx, wall.y + dy));
+        let ew = has(1, 0) || has(-1, 0);
+        let ns = has(0, 1) || has(0, -1);
+        let east_west = ew || !ns; // both / neither → east-west default
+        let thick = 0.12;
+        let length = 0.46; // half-extent → ~0.92 cell length
+        let half = if east_west {
+            [length, top * 0.5, thick] // long along X (east-west)
+        } else {
+            [thick, top * 0.5, length] // long along Z (north-south)
+        };
+        geo::push_box(&mut s.lit, [x, gy + top * 0.5, z], half, 0.0, stone.0);
+        // a thin capstone running the same length, slightly proud, to catch light.
+        let cap = if east_west {
+            [length + 0.02, 0.05, thick + 0.02]
+        } else {
+            [thick + 0.02, 0.05, length + 0.02]
+        };
+        geo::push_box(
+            &mut s.lit,
+            [x, gy + top - 0.03, z],
+            cap,
+            0.0,
+            Color([0.40 * tone, 0.38 * tone, 0.34 * tone, 1.0]).0,
+        );
+    }
+
+    // ---- open-world: trees (harvestable wood) + the village granary ----
+    // Only present in an open world (`trees` is empty otherwise). A tree is a brown
+    // trunk + a green canopy; a depleted (gathered) tree loses its canopy to a bare
+    // stump, so harvesting reads visually. Regrows in spring.
+    for t in &world.trees {
+        let (x, z) = (t.pos.x as f32, t.pos.y as f32);
+        let gy = g(x, z);
+        // trunk
+        geo::push_box(&mut s.lit, [x, gy + 0.22, z], [0.07, 0.22, 0.07], 0.0, Color::hex(0x5a3d24, 1.0).0);
+        // canopy scaled by remaining wood — a bare stump when depleted.
+        if t.wood > 0.15 {
+            let r = 0.18 + 0.34 * t.wood;
+            let h = 0.35 + 0.55 * t.wood;
+            // winter strips the green toward a frosted grey-green.
+            let canopy = if matches!(world.season(), crate::sim::Season::Winter) {
+                Color::hex(0x6f7d63, 1.0).0
+            } else {
+                Color::hex(0x2f6e3a, 1.0).0
+            };
+            geo::push_cone(&mut s.lit, x, gy + 0.4, z, r, h, 6, canopy);
+        }
+    }
+    if world.open_world {
+        // The granary / hearth: a squat wooden store distinct from the thin stone
+        // walls — a stacked-timber box with a fill bar showing how stocked it is, and
+        // a warm hearth glow that brightens with the stores (the village heart).
+        let (x, z) = (world.granary.x as f32, world.granary.y as f32);
+        let gy = g(x, z);
+        let cap = world.granary_capacity().max(1.0);
+        let fill = (world.granary_food / cap).clamp(0.0, 1.0);
+        // timber base
+        geo::push_box(&mut s.lit, [x, gy + 0.30, z], [0.42, 0.30, 0.42], 0.0, Color::hex(0x7a5230, 1.0).0);
+        // a lighter banded upper course so it reads as stacked timber, not a crate
+        geo::push_box(&mut s.lit, [x, gy + 0.62, z], [0.36, 0.10, 0.36], 0.0, Color::hex(0x9a6f44, 1.0).0);
+        // a conical thatch roof
+        geo::push_cone(&mut s.lit, x, gy + 0.72, z, 0.5, 0.42, 6, Color::hex(0xb98a3e, 1.0).0);
+        // a golden fill bar climbing the front face with the stores
+        if fill > 0.02 {
+            geo::push_box(
+                &mut s.lit,
+                [x, gy + 0.06 + 0.5 * fill, z + 0.44],
+                [0.30, 0.5 * fill, 0.03],
+                0.0,
+                Color::hex(0xffd166, 1.0).0,
+            );
+        }
+        // hearth glow: always a little warmth, brighter the more is stored.
+        glow(&mut s, [x, gy + 0.5, z], 1.2, Color::hex(0xffb24e, 0.10 + 0.22 * fill));
     }
 
     // ---- resources ----
@@ -275,10 +410,37 @@ pub fn build(
         glow(&mut s, [x, gy + 0.45, z], 0.7, Color::hex(0xff4a3a, 0.30));
     }
 
-    // ---- agents: little glowing figures ----
+    // ---- agents: little glowing figures (the living) and graves (the dead) ----
     for (i, a) in world.agents.iter().enumerate() {
         let (x, z) = (a.rx, a.ry);
         let gy = g(x, z);
+
+        // PERMADEATH: a dead mind leaves the living world. In its place a small
+        // stone cairn marks where it fell — no figure, no aura, no labels. A pale
+        // memorial glow rises for a while after death, then settles to the bare
+        // stone, so the village visibly depopulates and the loss is legible.
+        if !a.alive {
+            let age = world.tick.saturating_sub(a.death_tick.unwrap_or(world.tick)) as f32;
+            // a low cairn: a squat dark stone with a paler capstone.
+            geo::push_box(&mut s.lit, [x, gy + 0.18, z], [0.26, 0.18, 0.26], 0.0, Color::hex(0x4a4652, 1.0).0);
+            geo::push_box(&mut s.lit, [x, gy + 0.34, z], [0.16, 0.08, 0.16], 0.0, Color::hex(0x6a6676, 1.0).0);
+            // a small upright marker stone (a headstone) leaning a touch.
+            geo::push_box(&mut s.lit, [x, gy + 0.5, z - 0.02], [0.07, 0.22, 0.05], 0.06, Color::hex(0x57535f, 1.0).0);
+            // a fading memorial light: bright at the moment of death, easing to a
+            // faint, steady ember of remembrance.
+            let fresh = (1.0 - age / 240.0).clamp(0.0, 1.0);
+            let memo = 0.06 + 0.22 * fresh;
+            glow(&mut s, [x, gy + 0.5, z], 0.7 + 0.4 * fresh, Color::hex(0xbfc8e0, memo));
+            // the fallen one's name lingers over the grave.
+            if let Some((sx, sy)) = project(&vp, [x, gy + 0.9, z], sw, sh) {
+                if cam.zoom < 22.0 {
+                    let tw = a.name.chars().count() as f32 * 6.0 * ui;
+                    s.text(&a.name, sx - tw * 0.5, sy, 10.5 * ui, Color::hex(MUTED, 0.7));
+                }
+            }
+            continue;
+        }
+
         let (dom, _) = a.mind.drives().dominant();
         let accent = Color::hex(a.accent, 1.0);
         let mood = Color::hex(a.mind.affect().hue(), 1.0);
@@ -371,8 +533,13 @@ pub fn build(
     // Laid out in *design pixels* (the backing buffer ÷ ui), then scaled up by
     // `ui` so the panels read at the right size on any device-pixel-ratio.
     let mut chrome = Scene::new();
-    top_bar(&mut chrome, world, hud, sw / ui);
-    inspector(&mut chrome, world, selected, sw / ui, sh / ui);
+    if let Some(evo) = evo {
+        evo_top_bar(&mut chrome, evo, sw / ui);
+        evo_panel(&mut chrome, world, evo, sw / ui, sh / ui);
+    } else {
+        top_bar(&mut chrome, world, hud, sw / ui);
+        inspector(&mut chrome, world, selected, sw / ui, sh / ui);
+    }
     for mut q in chrome.quads {
         q.rect = [q.rect[0] * ui, q.rect[1] * ui, q.rect[2] * ui, q.rect[3] * ui];
         q.params[0] *= ui; // corner radius / orb radius
@@ -472,6 +639,84 @@ fn top_bar(s: &mut Scene, world: &GameWorld, hud: &Hud, sw: f32) {
     );
 }
 
+/// Top bar for the evolution mode: `Generation N · alive/pop · cycle k/10`.
+fn evo_top_bar(s: &mut Scene, evo: &EvoHud, sw: f32) {
+    s.rrect(12.0, 12.0, sw - 24.0, 38.0, 10.0, Color::hex(INK, 0.72));
+    s.orb(34.0, 31.0, 6.0, 0.8, Color::hex(0x5b3df0, 1.0));
+    s.text("DAIMON · EVOLUTION", 50.0, 21.0, 15.0, Color::hex(PAPER, 0.95));
+    let status = format!(
+        "Generation {}   ·   {}/{} alive   ·   cycle {}/{}",
+        evo.generation, evo.alive, evo.pop, evo.cycle, crate::evolve_mode::CYCLES_PER_GEN,
+    );
+    s.text(status, sw - 420.0, 21.0, 13.0, Color::hex(MUTED, 1.0));
+    s.text("natural selection · fast-forward", sw - 420.0, 37.0, 10.5, Color::hex(0x5fd6a0, 0.9));
+}
+
+/// Replaces the village inspector in evolution mode: how the population is faring
+/// and how it evolved last generation.
+fn evo_panel(s: &mut Scene, world: &GameWorld, evo: &EvoHud, sw: f32, sh: f32) {
+    let pw = 354.0;
+    let px = sw - pw - 14.0;
+    let py = 60.0;
+    let ph = sh - py - 14.0;
+    s.rrect(px, py, pw, ph, 14.0, Color::hex(INK, 0.8));
+    let tx = px + 18.0;
+    let mut y = py + 18.0;
+    s.text("EVOLUTION", tx, y, 12.0, Color::hex(CORAL, 1.0));
+    y += 26.0;
+
+    s.text(format!("Generation {}", evo.generation), tx, y, 16.0, Color::hex(PAPER, 1.0));
+    y += 24.0;
+    s.text(
+        format!("alive {} / {}   ·   cycle {}/10", evo.alive, evo.pop, evo.cycle),
+        tx, y, 12.5, Color::hex(MUTED, 1.0),
+    );
+    y += 18.0;
+    s.text(format!("walls built: {}", world.walls.len()), tx, y, 12.0, Color::hex(MUTED, 0.9));
+    y += 28.0;
+
+    // a live die-off bar.
+    let frac = evo.alive as f32 / (evo.pop.max(1) as f32);
+    bar(s, tx, y, pw - 36.0, frac, Color::hex(0x5fd6a0, 1.0));
+    y += 26.0;
+
+    s.text("LAST GENERATION", tx, y, 11.0, Color::hex(CORAL, 0.9));
+    y += 20.0;
+    match &evo.last {
+        None => {
+            s.text("(first generation in progress)", tx, y, 12.0, Color::hex(MUTED, 0.8));
+        }
+        Some(st) => {
+            s.text(
+                format!("survivors at end: {}   ·   elite {}", st.survivors_end, st.elite_n),
+                tx, y, 12.5, Color::hex(PAPER, 0.95),
+            );
+            y += 18.0;
+            // best first — it's the headline of "did the population improve?".
+            s.text(
+                format!("best fitness:   {:.0}", st.best_fitness),
+                tx, y, 12.0, Color::hex(PAPER, 1.0),
+            );
+            y += 18.0;
+            s.text(
+                format!("elite mean:     {:.0}", st.elite_mean),
+                tx, y, 12.0, Color::hex(MUTED, 1.0),
+            );
+            y += 18.0;
+            s.text(
+                format!("pop mean:       {:.0}", st.mean_fitness),
+                tx, y, 12.0, Color::hex(MUTED, 0.85),
+            );
+            y += 18.0;
+            let dom = st
+                .elite_dominant
+                .map(|d| d.name())
+                .unwrap_or("—");
+            s.text(format!("elite leading drive: {dom}"), tx, y, 12.0, Color::hex(0x5fd6a0, 0.95));
+        }
+    }
+}
+
 fn bar(s: &mut Scene, x: f32, y: f32, w: f32, frac: f32, c: Color) {
     s.rrect(x, y, w, 8.0, 4.0, Color::hex(INK, 0.85));
     s.rrect(x, y, (w * frac.clamp(0.0, 1.0)).max(2.0), 8.0, 4.0, c);
@@ -495,10 +740,26 @@ fn inspector(s: &mut Scene, world: &GameWorld, selected: Option<usize>, sw: f32,
             Color::hex(PAPER, 0.85),
         );
         let mut yy = py + 112.0;
+        let living = world.living_count();
+        let total = world.agents.len();
+        if living < total {
+            s.text(
+                format!("{living} of {total} still living"),
+                px + 18.0,
+                yy - 22.0,
+                11.0,
+                Color::hex(0xff8a8a, 0.95),
+            );
+        }
         for a in &world.agents {
-            s.orb(px + 26.0, yy + 7.0, 6.0, 0.6, Color::hex(a.accent, 1.0));
-            let (dom, _) = a.mind.drives().dominant();
-            s.text(format!("{}  ·  {}", a.name, dom.name()), px + 40.0, yy, 13.0, Color::hex(PAPER, 0.9));
+            if a.alive {
+                s.orb(px + 26.0, yy + 7.0, 6.0, 0.6, Color::hex(a.accent, 1.0));
+                let (dom, _) = a.mind.drives().dominant();
+                s.text(format!("{}  ·  {}", a.name, dom.name()), px + 40.0, yy, 13.0, Color::hex(PAPER, 0.9));
+            } else {
+                s.orb(px + 26.0, yy + 7.0, 5.0, 0.4, Color::hex(0x6a6676, 1.0));
+                s.text(format!("{}  ·  lost", a.name), px + 40.0, yy, 13.0, Color::hex(MUTED, 0.7));
+            }
             yy += 24.0;
         }
         yy += 10.0;

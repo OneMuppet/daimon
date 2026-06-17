@@ -17,6 +17,10 @@ use std::collections::BTreeMap;
 /// How many steps ahead the planner commits before the cycle re-evaluates.
 const HORIZON: usize = 4;
 
+/// Carried-provision load at which a provisioning agent stops gathering and heads
+/// for the granary to store. A round-trip rhythm, not a hoard.
+const PROVISION_LOAD: f32 = 0.6;
+
 /// Region size for the danger map (a coarse grid the agent learns to avoid).
 pub const REGION: i32 = 4;
 
@@ -96,6 +100,45 @@ pub fn plan_for_with(
         ),
         GoalKind::Explore => wander(pos, world, danger, rng),
         GoalKind::Recover => vec![Action::Rest],
+        // SHELTER: enclose the self. If a side is still open, wall the cell on the
+        // gap the body senses; once fully enclosed there is nothing to build, so
+        // rest (safe inside) — never a scripted hut, just "close the next gap".
+        GoalKind::Shelter => match me.and_then(|m| m.shelter_gap) {
+            Some(d) => vec![Action::Build(pos.step(d))],
+            None => vec![Action::Rest],
+        },
+        // MOURN (loss-oriented coping): withdraw and be still. The grieving mind
+        // pulls back from foraging and social initiative — it idles in place and
+        // reminisces (the reminiscence is the narration). Resting also lets it
+        // recover, so withdrawal is not self-destructive. The Dual-Process swing
+        // back to ordinary goals is driven in `decide`, not here.
+        GoalKind::Mourn => vec![Action::Rest],
+        // PROVISION (stock up against winter): a two-phase plan the body's senses
+        // drive. If carrying a surplus and the granary's direction is known, step
+        // toward it and Store; otherwise step toward the nearest harvestable source
+        // and Gather. The thresholds/dirs come from the world via `SelfState` (just
+        // as Shelter reads `shelter_gap`), so this is "take the next provisioning
+        // step", never a scripted stockpile routine. Falls back to wandering to find
+        // a source if neither direction is sensed.
+        GoalKind::Provision => {
+            let carrying = me.map(|m| m.carrying).unwrap_or(0.0);
+            let store_dir = me.and_then(|m| m.store_dir);
+            let gather_dir = me.and_then(|m| m.gather_dir);
+            match (carrying >= PROVISION_LOAD, store_dir, gather_dir) {
+                // carrying a load and the cache is somewhere: head there and store.
+                (true, Some(d), _) => step_then(pos, d, Action::Store),
+                // room to carry more and a source is known: head there and gather.
+                (false, _, Some(d)) => step_then(pos, d, Action::Gather),
+                // carrying a load but the cache is right here (no dir): store now.
+                (true, None, _) => vec![Action::Store],
+                // WINTER homing: nothing to gather, not carrying — but the hearth has
+                // a direction (the cache/warmth is over there). Walk home; the world
+                // auto-draws the stores once we're in the hearth's radius.
+                (false, Some(d), None) => vec![Action::Move(d); 2],
+                // nothing sensed: stay put by the warmth / look around.
+                (false, None, None) => vec![Action::Rest],
+            }
+        }
     };
 
     Plan::new(goal.clone(), steps, tick)
@@ -228,6 +271,13 @@ fn path_to(from: Pos, target: Pos, finish: Action) -> Vec<Action> {
         steps.push(Action::Wait);
     }
     steps
+}
+
+/// One step in a sensed direction, then perform `finish` (which the world resolves
+/// only if the agent is actually adjacent to / on the relevant feature). Used by
+/// Provision, whose Gather/Store targets are sensed as a direction, not a belief id.
+fn step_then(_from: Pos, dir: Dir, finish: Action) -> Vec<Action> {
+    vec![Action::Move(dir), finish]
 }
 
 /// Curiosity-biased wandering: prefer directions that lead away from where we

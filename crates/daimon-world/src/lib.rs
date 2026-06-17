@@ -272,6 +272,14 @@ impl World {
                 // single-agent world: a lone strike has no allies to make it work,
                 // so it does nothing here (collective defence lives in the village).
             }
+            Action::Build(_at) => {
+                // this minimal single-agent world has no structures store; building
+                // is a village-world (sim) affordance, so here it is a no-op.
+            }
+            Action::Gather | Action::Store => {
+                // Provisioning is an open-world (village sim) affordance; this minimal
+                // single-agent world has no seasons or granary, so it is a no-op here.
+            }
             Action::Rest => {
                 self.body.energy = (self.body.energy + 0.03).min(1.0);
             }

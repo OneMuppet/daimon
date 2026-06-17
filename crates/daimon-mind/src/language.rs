@@ -158,6 +158,33 @@ fn lead_clause(rng: &mut Rng, p: &Phrasing) -> String {
             &format!("safe enough at {coord} to rest"),
         ])
         .to_string(),
+        GoalKind::Shelter => pick(rng, &[
+            "too exposed out here — I'll wall myself in",
+            "I want walls around me, not open ground",
+            "closing the gap; I'll feel safer enclosed",
+            &format!("building up the sides here at {coord}"),
+        ])
+        .to_string(),
+        GoalKind::Mourn => {
+            // reminisce about the named dead friend (the continuing bond made audible).
+            let who = p.other.or(p.target).unwrap_or("them");
+            pick(rng, &[
+                &format!("I keep seeing {who}. I can't just carry on"),
+                &format!("{who} is gone — I need a moment with it"),
+                &format!("the others move on; I'm still back there with {who}"),
+                &format!("I sit a while. {who} would have liked it quiet here"),
+                "the grief is heavy — I withdraw into it for now",
+            ])
+            .to_string()
+        }
+        GoalKind::Provision => pick(rng, &[
+            "winter is coming — better store some while there's plenty",
+            "the season won't last; I'm laying provisions by",
+            "gathering a surplus for the cold — the granary needs filling",
+            &format!("hauling stores to the cache near {coord}"),
+            "stock now, eat later — that's how you last the winter",
+        ])
+        .to_string(),
     }
 }
 

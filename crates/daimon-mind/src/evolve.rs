@@ -31,7 +31,7 @@ use crate::mind::{Mind, MindConfig};
 use crate::persona::Persona;
 
 /// Number of genes in the cognitive genome.
-pub const N_GENES: usize = 21;
+pub const N_GENES: usize = 28;
 
 /// A cognitive genome: a point in the architecture's tunable space, stored as
 /// `N_GENES` normalised genes in `[0,1]` and decoded into real cognitive knobs.
@@ -81,6 +81,13 @@ impl Genome {
         g[18] = 0.0; // stigmergy off (no environmental pheromone)
         g[19] = 0.0; // affect modulation off (emotion tracked read-only)
         g[20] = 0.0; // can-fight off (flee-only — the incumbent behaviour)
+        g[21] = 0.0; // can-build off (no shelter need / building — incumbent)
+        g[22] = 0.0; // can-die off (immortal: health floors at 0.05 — incumbent)
+        g[23] = 0.0; // can-grieve off (no bereavement modelling — incumbent)
+        g[24] = 0.0; // can-provision off (no seasonal stockpiling — incumbent)
+        g[25] = 0.0; // nn-overlay off (System-2 learned overlay disabled — incumbent)
+        g[26] = 0.0; // nn learning-rate 0 (no in-life plasticity)
+        g[27] = 0.0; // nn modulation 0 (overlay contributes zero bias)
         Genome { g }
     }
 
@@ -118,6 +125,10 @@ impl Genome {
             tie_margin: lerp(self.g[2], 0.05, 0.6),
             reflect_interval: lerp(self.g[3], 10.0, 60.0).round() as u64,
             plan_staleness: lerp(self.g[4], 2.0, 15.0).round() as u64,
+            can_build: self.can_build(),
+            can_die: self.can_die(),
+            can_grieve: self.can_grieve(),
+            can_provision: self.can_provision(),
         }
     }
     /// Persona deltas in `[-0.3, 0.3]`, applied on top of a base character so the
@@ -178,6 +189,51 @@ impl Genome {
     pub fn can_fight(&self) -> bool {
         self.g[20] >= 0.5
     }
+    /// Whether the agent has the *option* to build (place walls to enclose itself
+    /// for shelter). Off by default — nothing tells it to build a hut; given the
+    /// affordance + a shelter need, walling-in must *emerge* from utility planning.
+    pub fn can_build(&self) -> bool {
+        self.g[21] >= 0.5
+    }
+    /// Whether the agent is *mortal*: health is no longer floored at 0.05, so a
+    /// fully-depleted or fatally-mauled body dies for good (permadeath), and the
+    /// mind feels a fear of death (mortality salience) as its health trajectory
+    /// declines. Off by default — immortal worlds floor health and draw no death
+    /// RNG, staying bit-identical to the incumbent.
+    pub fn can_die(&self) -> bool {
+        self.g[22] >= 0.5
+    }
+    /// Whether the agent *grieves*: the death of a bonded peer triggers mourning
+    /// scaled by the bond, a continuing bond to the dead, and Dual-Process
+    /// oscillation that decays over time (faster with friends near). Off by
+    /// default — non-grieving worlds run no bereavement logic and stay identical.
+    pub fn can_grieve(&self) -> bool {
+        self.g[23] >= 0.5
+    }
+    /// Whether the agent *provisions*: in an open world it gathers a surplus of
+    /// food while abundant and stores it in the village granary, drawing it down to
+    /// survive winter. Off by default — a non-provisioning world adopts no Provision
+    /// goal, resolves no Gather/Store, and stays bit-identical. Only does anything
+    /// when the world's `open_world` flag is also on (no seasons otherwise).
+    pub fn can_provision(&self) -> bool {
+        self.g[24] >= 0.5
+    }
+    /// Whether the **System-2 learned overlay** is active. Off by default — a
+    /// disabled overlay emits exactly zero bias and never learns, so the instinct
+    /// (and the whole seeded harness) is byte-identical to the incumbent. When on,
+    /// a tiny evolved-plastic net nudges the drive arbitration and adapts in-life.
+    pub fn nn_enabled(&self) -> bool {
+        self.g[25] >= 0.5
+    }
+    /// In-life Hebbian learning rate η, decoded to `[0, 0.15]`.
+    pub fn nn_learn_rate(&self) -> f32 {
+        lerp(self.g[26], 0.0, 0.15)
+    }
+    /// How strongly the overlay's outputs bias the drive pressures, in `[0, 0.6]`
+    /// — a bounded *nudge*, never enough to fully hijack the instinct.
+    pub fn nn_modulation(&self) -> f32 {
+        lerp(self.g[27], 0.0, 0.6)
+    }
 
     /// Express this genome as a live [`Mind`], applying the persona deltas on top
     /// of a base character (preserving its identity and diversity).
@@ -207,6 +263,16 @@ impl Genome {
         mind.set_stigmergy(self.stigmergy());
         mind.set_affect_mod(self.affect_mod());
         mind.set_can_fight(self.can_fight());
+        mind.set_can_build(self.can_build());
+        mind.set_can_die(self.can_die());
+        mind.set_can_grieve(self.can_grieve());
+        mind.set_can_provision(self.can_provision());
+        mind.install_overlay(
+            self.nn_enabled(),
+            seed,
+            self.nn_learn_rate(),
+            self.nn_modulation(),
+        );
         mind
     }
 
@@ -532,7 +598,8 @@ mod tests {
     #[test]
     fn engine_improves_and_learns() {
         let target = [
-            0.9, 0.1, 0.8, 0.2, 0.7, 0.3, 0.6, 0.4, 1.0, 0.0, 1.0, 0.0, 1.0, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+            0.9, 0.1, 0.8, 0.2, 0.7, 0.3, 0.6, 0.4, 1.0, 0.0, 1.0, 0.0, 1.0, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+            1.0, 0.5, 0.5,
         ];
         let eval = synthetic(target);
         let mut evo = Evolution::new(0xA11CE, 16, &eval);
@@ -571,5 +638,38 @@ mod tests {
         assert_eq!(c.reflect_interval, 25);
         assert!((c.surprise_threshold - 0.55).abs() < 0.02);
         assert!(g.empowerment() && g.imagination() && !g.quantum());
+    }
+
+    #[test]
+    fn building_is_off_in_baseline_and_showcase() {
+        // can_build must default OFF in BOTH presets so every existing AC, proof,
+        // and fitness run stays bit-identical (no walls, no shelter need, no RNG).
+        assert!(!Genome::baseline().can_build());
+        assert!(!Genome::showcase().can_build());
+    }
+
+    #[test]
+    fn mortality_and_grief_are_off_in_baseline_and_showcase() {
+        // can_die and can_grieve must default OFF in BOTH presets so every existing
+        // AC, proof, and fitness run stays bit-identical (no deaths, no death RNG,
+        // no bereavement logic). The live game flips them on by cloning showcase.
+        assert!(!Genome::baseline().can_die());
+        assert!(!Genome::baseline().can_grieve());
+        assert!(!Genome::showcase().can_die());
+        assert!(!Genome::showcase().can_grieve());
+        // and the config decode agrees.
+        assert!(!Genome::baseline().config().can_die);
+        assert!(!Genome::baseline().config().can_grieve);
+    }
+
+    #[test]
+    fn provisioning_is_off_in_baseline_and_showcase() {
+        // can_provision must default OFF in BOTH presets so every existing AC, proof,
+        // and fitness run stays bit-identical (no seasons, no granary, no Provision
+        // goal, no Gather/Store, no new RNG). The live game / --evolve flip it on by
+        // cloning showcase and also turning on the world's open_world flag.
+        assert!(!Genome::baseline().can_provision());
+        assert!(!Genome::showcase().can_provision());
+        assert!(!Genome::baseline().config().can_provision);
     }
 }

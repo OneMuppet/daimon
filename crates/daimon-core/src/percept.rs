@@ -45,6 +45,11 @@ pub enum WorldEvent {
     Discovered { id: EntityId },
     /// An entity the agent believed was here is now gone.
     Vanished { id: EntityId },
+    /// Another agent died — a permanent loss the village can perceive. `cause` is
+    /// a short label ("the stalker", "hunger") for narration; `pos` is where it
+    /// fell. Only emitted in worlds where mortality is enabled (the `can_die`
+    /// gene), so non-mortal worlds never see it and stay bit-identical.
+    Died { id: EntityId, pos: Pos, cause: String },
 }
 
 /// One frame of sensory input. The world produces it; perception consumes it.

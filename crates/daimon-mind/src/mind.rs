@@ -28,6 +28,7 @@ use crate::deliberate::{Deliberator, DeliberationContext, HeuristicDeliberator};
 use crate::persona::Persona;
 use crate::planner::{plan_for, plan_for_with, region_of, Danger};
 use crate::imagine::ForwardModel;
+use crate::overlay::{Overlay, N_IN};
 use crate::praxis::Praxis;
 use crate::project::{Project, ProjectKind};
 use daimon_core::Dir;
@@ -53,6 +54,24 @@ pub struct MindConfig {
     pub reflect_interval: u64,
     /// Re-plan if the current plan is older than this many ticks.
     pub plan_staleness: u64,
+    /// Whether the agent has the build affordance: it *may* wall itself in for
+    /// shelter when exposed under threat. Off by default — so worlds without
+    /// building draw no shelter logic and stay bit-identical. Nothing here tells
+    /// it to build a hut; the structure emerges from utility planning.
+    #[serde(default)]
+    pub can_build: bool,
+    /// Whether the agent is mortal (health no longer floored; it can die for good)
+    /// and feels a fear of death from its health trajectory. Off by default.
+    #[serde(default)]
+    pub can_die: bool,
+    /// Whether the agent grieves the death of a bonded peer. Off by default.
+    #[serde(default)]
+    pub can_grieve: bool,
+    /// Whether the agent provisions for winter in an open world (gather surplus →
+    /// store in the granary → draw it down through the cold). Off by default — so a
+    /// world without provisioning adopts no Provision goal and stays bit-identical.
+    #[serde(default)]
+    pub can_provision: bool,
 }
 
 impl Default for MindConfig {
@@ -63,6 +82,10 @@ impl Default for MindConfig {
             tie_margin: 0.25,
             reflect_interval: 25,
             plan_staleness: 6,
+            can_build: false,
+            can_die: false,
+            can_grieve: false,
+            can_provision: false,
         }
     }
 }
@@ -198,6 +221,35 @@ pub struct Mind {
     /// *feels* about its situation, distinct from what it needs.
     #[serde(default)]
     affect: Affect,
+    /// MORTALITY SALIENCE (TMT): the felt dread of one's own decline. Driven by the
+    /// health *trajectory* (a slow-bleeding body dreads more than a stable one),
+    /// recent harm, and witnessed deaths — not just present injury. Decays when the
+    /// body recovers. In `[0,1]`. Zero and inert unless `can_die` is on.
+    #[serde(default)]
+    mortality: f32,
+    /// Health last tick, so the appraisal can read the *trajectory* (declining vs
+    /// recovering), which is what mortality salience keys on.
+    #[serde(default)]
+    prev_health: f32,
+    /// GRIEF: the open wound of a lost bond. Set when a bonded peer dies, scaled by
+    /// the bond strength at that moment; lowers valence and drives Dual-Process
+    /// oscillation (Mourn vs restoration). Decays over ticks — faster when other
+    /// bonded living friends are near (social support). In `[0,1]`. Inert unless
+    /// `can_grieve` is on. A stranger's death adds ~nothing here — the asymmetry.
+    #[serde(default)]
+    grief: f32,
+    /// The peer whose death this grief is for (the named dead friend the mind
+    /// reminisces about). Kept alongside the continuing bond in theory-of-mind.
+    #[serde(default)]
+    grieving_for: Option<EntityId>,
+    /// System-2: the learned, evolved-plastic neural overlay. Inert (zero bias,
+    /// no learning) when disabled, so the instinct stays byte-identical.
+    #[serde(default)]
+    overlay: Overlay,
+    /// The mind's well-being last tick — the baseline for the overlay's intrinsic
+    /// reward signal (Δ well-being). Transient learning bookkeeping.
+    #[serde(default)]
+    prev_wellbeing: f32,
     cfg: MindConfig,
     last_deliberation: Option<u64>,
     metrics: Metrics,
@@ -220,6 +272,14 @@ const CRITICAL: f32 = 0.8;
 /// destination's value. exp(-κ·exposure) — κ≈0.7 ⇒ one unit of exposure halves it
 /// (Mangel & Clark 1986: value scales by survival probability, never subtracted).
 const DRR_KAPPA: f32 = 0.7;
+/// The bond strength (disposition) above which a peer counts as a *bonded friend*
+/// whose death triggers real grief. New acquaintances start at 0.15 and a standing
+/// friendship is recorded at 0.4 — so 0.3 marks "more than a passing stranger,
+/// genuinely close", which is exactly the line grief science draws (attachment, not
+/// mere acquaintance). Below it, a death is noted but not mourned — the asymmetry.
+const BOND_THRESHOLD: f32 = 0.3;
+/// Below this grief intensity, the wound is considered healed and mourning ends.
+const GRIEF_RESOLVED_BELOW: f32 = 0.08;
 
 impl Mind {
     /// A Daimon with the default offline deliberator and config.
@@ -283,6 +343,12 @@ impl Mind {
             anticipation: Anticipation::default(),
             lprog: LearningProgress::default(),
             affect: Affect::default(),
+            mortality: 0.0,
+            prev_health: 1.0,
+            grief: 0.0,
+            grieving_for: None,
+            overlay: Overlay::disabled(),
+            prev_wellbeing: 0.0,
             cfg,
             last_deliberation: None,
             metrics: Metrics::default(),
@@ -409,6 +475,144 @@ impl Mind {
     pub fn set_can_fight(&mut self, on: bool) {
         self.can_fight = on;
     }
+    /// Give the agent the *option* to build shelter (not the instruction to). With
+    /// it on, an exposed-and-threatened agent may adopt a Shelter goal and wall
+    /// itself in; whether and what it builds emerges from its own utility planning.
+    pub fn set_can_build(&mut self, on: bool) {
+        self.cfg.can_build = on;
+    }
+    /// Make the agent mortal (health no longer floored; it can die for good) and
+    /// give it a fear of death from its health trajectory. Off by default.
+    pub fn set_can_die(&mut self, on: bool) {
+        self.cfg.can_die = on;
+    }
+    /// Whether this mind is mortal — the world reads this to know whether to remove
+    /// the health floor and let the body actually die.
+    pub fn can_die(&self) -> bool {
+        self.cfg.can_die
+    }
+    /// Let the agent grieve the death of a bonded peer. Off by default.
+    pub fn set_can_grieve(&mut self, on: bool) {
+        self.cfg.can_grieve = on;
+    }
+    /// Whether this mind grieves (for inspection).
+    pub fn can_grieve(&self) -> bool {
+        self.cfg.can_grieve
+    }
+    /// Give the agent the *option* to provision for winter (not the instruction to).
+    /// With it on (and the world an open world), a mind whose needs are met may adopt
+    /// a Provision goal and stock the granary; whether and when emerges from its
+    /// Mastery + foresight appraisal. Off by default.
+    pub fn set_can_provision(&mut self, on: bool) {
+        self.cfg.can_provision = on;
+    }
+    /// Whether this mind provisions (for inspection / the harness).
+    pub fn can_provision(&self) -> bool {
+        self.cfg.can_provision
+    }
+    /// Install the System-2 learned overlay (called from `Genome::express`). When
+    /// `enabled` is false the overlay is inert (zero bias, no learning), so the
+    /// instinct — and any seeded run with the gene off — is byte-identical.
+    pub fn install_overlay(&mut self, enabled: bool, seed: u64, lr: f32, modulation: f32) {
+        self.overlay = if enabled {
+            // per-agent init from the mind seed → diversity across a population;
+            // the genome evolves the *learning machinery* (lr, modulation), not
+            // the weights (Baldwin). Deterministic given the seed.
+            Overlay::seeded(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xA11CE, lr, modulation)
+        } else {
+            Overlay::disabled()
+        };
+    }
+    /// Whether the learned overlay is active (for inspection / the harness).
+    pub fn overlay_enabled(&self) -> bool {
+        self.overlay.enabled()
+    }
+    /// Sum of |overlay weights| — lets the harness confirm in-life learning moved
+    /// the network (and that it stays bounded).
+    pub fn overlay_weight_magnitude(&self) -> f32 {
+        self.overlay.weight_magnitude()
+    }
+    /// The mind's current **well-being** in `[0,1]`: bodily satisfaction (low
+    /// drives), health, and a felt-good (valence) term, dimmed by grief. This is
+    /// the intrinsic signal the overlay's reward is the *change* of — the mind
+    /// learns to bias decisions toward what improves its own life.
+    fn wellbeing(&self) -> f32 {
+        // mean satisfaction across the 6 drives (1 - level), so a sated mind scores high.
+        let mut sat = 0.0f32;
+        for d in Drive::ALL {
+            sat += 1.0 - self.drives.level(d);
+        }
+        sat /= Drive::ALL.len() as f32;
+        let health = self.world.me().map(|m| m.health).unwrap_or(1.0);
+        let valence01 = (self.affect.valence + 1.0) * 0.5; // [-1,1] → [0,1]
+        let wb = 0.5 * sat + 0.35 * health + 0.15 * valence01;
+        (wb - 0.4 * self.grief).clamp(0.0, 1.0)
+    }
+    /// Assemble the overlay's input feature vector from values the appraisal has
+    /// already computed this tick. Order is fixed and mirrored in `overlay.rs`.
+    fn overlay_features(&self) -> [f32; N_IN] {
+        let me = self.world.me();
+        let (health, enclosure, winter, carrying) = me
+            .map(|m| (m.health, m.enclosure, m.winter_in, m.carrying.min(1.0)))
+            .unwrap_or((1.0, 0.0, 0.0, 0.0));
+        let threat = me
+            .and_then(|m| self.world.nearest_threat(m.pos).map(|t| (m.pos, t)))
+            .map(|(p, t)| {
+                let d = t.entity.pos.manhattan(p) as f32;
+                ((8.0 - d) / 8.0).clamp(0.0, 1.0) // 1 = right on top of me, 0 = far/none
+            })
+            .unwrap_or(0.0);
+        [
+            self.drives.level(Drive::Hunger),
+            self.drives.level(Drive::Thirst),
+            self.drives.level(Drive::Survival),
+            self.drives.level(Drive::Curiosity),
+            self.drives.level(Drive::Social),
+            self.drives.level(Drive::Mastery),
+            self.affect.valence,
+            self.affect.arousal,
+            health,
+            threat,
+            enclosure,
+            self.mortality,
+            self.grief,
+            winter,
+            carrying,
+            1.0, // bias unit
+        ]
+    }
+    /// Pick the dominant drive, with the learned overlay's bounded bias added to
+    /// each drive's pressure before the arg-max. The chosen drive's *true*
+    /// pressure is returned (the overlay steers selection, not the urgency the
+    /// rest of the cascade reasons about). Disabled overlay ⇒ `drives.dominant()`.
+    fn dominant_biased(&mut self) -> (Drive, f32) {
+        if !self.overlay.enabled() {
+            return self.drives.dominant();
+        }
+        let feats = self.overlay_features();
+        let bias = self.overlay.bias(&feats);
+        let mut best = Drive::ALL[0];
+        let mut best_score = f32::MIN;
+        for (i, d) in Drive::ALL.into_iter().enumerate() {
+            let score = self.drives.pressure(d) + bias[i];
+            if score > best_score {
+                best_score = score;
+                best = d;
+            }
+        }
+        (best, self.drives.pressure(best))
+    }
+    /// The felt dread of one's own mortality (mortality salience, TMT), in `[0,1]`.
+    /// Rises with a declining health trajectory and witnessed death; ~0 for a
+    /// thriving, immortal, or stable agent. For inspection and the ACs.
+    pub fn mortality_salience(&self) -> f32 {
+        self.mortality
+    }
+    /// The current intensity of grief over a lost friend, in `[0,1]`. ~0 unless a
+    /// *bonded* peer has died (and decaying toward 0 as the mind heals).
+    pub fn grief(&self) -> f32 {
+        self.grief
+    }
     /// The agent's learned value of confronting (for inspection/metrics).
     pub fn confront_value(&self) -> f32 {
         self.confront_value
@@ -529,6 +733,20 @@ impl Mind {
         // 2) APPRAISE — update drives from body + world; measure surprise.
         let surprise = self.appraise(p, newly.len());
         self.record_events(&p.events);
+        // GRIEF DECAYS over time — and faster when bonded living friends are near
+        // (social support speeds bereavement's resolution). A no-op when not
+        // grieving, and entirely skipped (no work) when grief is off.
+        self.decay_grief(p.me.pos);
+
+        // SYSTEM 2 — reward the learned overlay for the OUTCOME of last tick's
+        // biased decision: the change in the mind's own well-being (an intrinsic,
+        // deterministic signal — no external supervision). A no-op when the
+        // overlay is disabled, and on the first tick (nothing biased yet).
+        if self.overlay.enabled() {
+            let wb = self.wellbeing();
+            self.overlay.learn(wb - self.prev_wellbeing);
+            self.prev_wellbeing = wb;
+        }
 
         // 3) REFLEX — a close predator pre-empts everything (System 1, wired).
         if let Some(t) = self.reflex_check(p) {
@@ -621,7 +839,18 @@ impl Mind {
         if let Some(t) = self.world.nearest_threat(me.pos) {
             let d = t.entity.pos.manhattan(me.pos) as f32;
             let prox = ((6.0 - d) / 6.0).clamp(0.0, 1.0);
-            survival = survival.max(prox * (1.0 - 0.3 * self.persona.boldness));
+            // ENCLOSURE folds into the appraisal: being walled-in dampens the felt
+            // threat from a nearby predator (a sheltered agent is calmer, and — since
+            // walls actually block the stalker — genuinely safer), so survival-need →
+            // wall-in → calm is a real loop. Gated by `can_build`: only builders sense
+            // shelter relief, so non-building worlds (where map edges give nonzero
+            // enclosure) stay byte-identical to the incumbent appraisal.
+            let shelter_relief = if self.cfg.can_build {
+                1.0 - 0.8 * me.enclosure.clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            survival = survival.max(prox * (1.0 - 0.3 * self.persona.boldness) * shelter_relief);
         }
         // affect modulation (uses *last* tick's mood — your current feeling shapes
         // how you appraise now): fear (negative valence × arousal) sharpens caution,
@@ -630,6 +859,39 @@ impl Mind {
             let fear = (-self.affect.valence).max(0.0) * self.affect.arousal;
             survival = (survival * (1.0 + 0.6 * fear)).min(1.0);
         }
+
+        // FEAR OF DEATH (mortality salience, Terror Management Theory). A mind that
+        // can die and senses its own decline feels a dread that present injury alone
+        // doesn't capture: it is the *trajectory* that frightens — a body bleeding
+        // out at 0.5-and-falling dreads more than one steady at 0.5. Driven by
+        // (a) declining health (Δ over the last tick), (b) low absolute health as a
+        // standing reminder, and (c) recent harm / witnessed death already lifted
+        // `mortality` elsewhere. It decays when the body recovers. Gated by
+        // `can_die`, so immortal worlds compute nothing here and stay bit-identical.
+        if self.cfg.can_die {
+            let decline = (self.prev_health - me.health).max(0.0); // how fast I'm fading
+            let frailty = (1.0 - me.health).clamp(0.0, 1.0); // how close to the edge
+            if decline > 1e-4 {
+                // a DECLINING body's dread ACCUMULATES — the fear of a downward
+                // trajectory builds the longer it persists (a bleeding wound that
+                // won't stop is terrifying out of proportion to any one tick). Each
+                // declining tick adds, scaled up sharply (per-tick health loss is
+                // small) and amplified by how frail one already is. This is what
+                // makes the dread *preventive*: it crosses the affiliation/shelter
+                // thresholds well before health is critical.
+                let add = (30.0 * decline) * (0.5 + frailty);
+                self.mortality = (self.mortality + add).min(1.0);
+            } else {
+                // a stable or recovering body sheds dread gradually (relief).
+                self.mortality = (self.mortality - 0.03).max(0.0);
+            }
+            // mortality salience raises the felt survival pressure preventively, so
+            // the mind turns to shelter and to its friends *before* a crisis — the
+            // TMT prediction (worldview + affiliation defence). Bounded so it sharpens
+            // priorities without erasing hunger/thirst.
+            survival = (survival + 0.5 * self.mortality).min(1.0);
+        }
+        self.prev_health = me.health;
         self.drives.set(Drive::Survival, survival);
 
         // intrinsic curiosity: novelty is rewarding (Schmidhuber; Pathak ICM).
@@ -663,8 +925,14 @@ impl Mind {
         let surprise = self.anticipation.observe(p);
 
         // appraise the whole situation into a felt emotional state (read-only).
-        let condition = (me.health + me.energy + me.hydration) / 3.0;
-        let threat = self.drives.level(Drive::Survival); // blends predator + injury
+        // Mortality dread and grief both colour the feeling: dread (TMT) pushes
+        // valence down + arousal up (afraid), while grief drags valence down with
+        // less arousal (the weary, withdrawn pole of bereavement). Both are zero
+        // unless their gene is on, so the baseline appraisal is unchanged.
+        let mut condition = (me.health + me.energy + me.hydration) / 3.0;
+        let mut threat = self.drives.level(Drive::Survival); // blends predator + injury
+        condition = (condition - 0.4 * self.grief).clamp(0.0, 1.0); // loss dims wellbeing
+        threat = (threat + 0.5 * self.mortality).clamp(0.0, 1.0); // dread reads as threat
         let urgency = Drive::ALL.iter().map(|&d| self.drives.level(d)).fold(0.0, f32::max);
         self.affect.update(condition, threat, surprise, urgency);
 
@@ -805,8 +1073,75 @@ impl Mind {
                     valence: -0.1,
                     subject: Some(*id),
                 },
+                WorldEvent::Died { id, pos: _, cause } => {
+                    // A peer has died, for good. The CONTINUING BOND: we do not purge
+                    // their model — we re-tag it "gone" (mark_dead), keeping the
+                    // relationship so we can still reminisce. GRIEF is triggered only
+                    // by rupture of an *attachment bond*: its intensity scales with
+                    // how close we were (the bond = disposition at time of death). A
+                    // stranger (low/no bond) produces ~no grief — that asymmetry is
+                    // the point. Witnessing a death also lifts mortality salience
+                    // (a stark reminder of one's own end).
+                    let bond = self.social.mark_dead(*id, now).unwrap_or(0.0);
+                    let name = self.social.model(*id).map(|m| m.name.clone());
+                    if self.cfg.can_die {
+                        // seeing another fall is a memento mori, bonded or not.
+                        self.mortality = (self.mortality + 0.25).min(1.0);
+                    }
+                    if self.cfg.can_grieve && bond > BOND_THRESHOLD {
+                        // grief ∝ closeness, accumulating if more than one is lost.
+                        let intensity = (bond.clamp(0.0, 1.0)).min(1.0);
+                        self.grief = (self.grief + intensity).min(1.0);
+                        // grieve for the closest loss we carry.
+                        let switch = self
+                            .grieving_for
+                            .map(|g| self.social.bond(g) < bond)
+                            .unwrap_or(true);
+                        if switch {
+                            self.grieving_for = Some(*id);
+                        }
+                        let who = name.clone().unwrap_or_else(|| "a friend".into());
+                        Episode {
+                            tick: now,
+                            what: format!("{who} is gone — taken by {cause}. I can't take it in."),
+                            salience: 1.0,
+                            valence: -1.0,
+                            subject: Some(*id),
+                        }
+                    } else {
+                        // a stranger's death: noted, but it does not wound us.
+                        let who = name.unwrap_or_else(|| "someone".into());
+                        Episode {
+                            tick: now,
+                            what: format!("{who} died — {cause} took them. We barely knew each other."),
+                            salience: 0.45,
+                            valence: -0.2,
+                            subject: Some(*id),
+                        }
+                    }
+                }
             };
             self.memory.remember(ep);
+        }
+    }
+
+    /// Grief heals with time, and faster amid living friends (social support is the
+    /// best-evidenced accelerant of bereavement recovery). The decay is geometric;
+    /// a nearby bonded friend roughly triples the per-tick healing. When grief falls
+    /// below the resolved threshold the wound closes and mourning ends — though the
+    /// continuing bond to the dead is kept forever in theory-of-mind.
+    fn decay_grief(&mut self, pos: Pos) {
+        if self.grief <= 0.0 {
+            return;
+        }
+        let supported =
+            self.social.living_friend_near(pos, 5, BOND_THRESHOLD);
+        // base half-life ≈ 350 ticks alone; ≈ 120 with a friend close by.
+        let decay = if supported { 0.0058 } else { 0.0020 };
+        self.grief = (self.grief - decay).max(0.0);
+        if self.grief < GRIEF_RESOLVED_BELOW {
+            self.grief = 0.0;
+            self.grieving_for = None;
         }
     }
 
@@ -885,7 +1220,10 @@ impl Mind {
             );
         }
 
-        let (dom, dom_pressure) = self.drives.dominant();
+        // SYSTEM 2 — the learned overlay nudges which drive dominates. With the
+        // overlay disabled, `dominant_biased` returns exactly `drives.dominant()`,
+        // so the whole cascade below is byte-identical to the pure instinct.
+        let (dom, dom_pressure) = self.dominant_biased();
 
         // CONFRONT: when survival leads and a threat is in view, the agent may
         // choose to face it instead of fleeing — its own call from what it has
@@ -903,6 +1241,176 @@ impl Mind {
                     let pr = dom_pressure.max(0.9);
                     return self.apply_commitment(
                         Goal { kind, origin: Drive::Survival, priority: pr },
+                        Process::Routine,
+                        reason,
+                        pr,
+                    );
+                }
+            }
+        }
+
+        // SHELTER: a felt-safety move, not a scripted hut. When the agent has the
+        // build affordance and feels EXPOSED (low enclosure) with a buildable gap,
+        // and a threat is perceived (a predator belief within ~5 cells) OR it was
+        // recently hurt — while hunger/thirst are not critical (those still win) —
+        // it adopts a Shelter goal and walls in the open side. Repeating this,
+        // side by side, surrounds the agent and a shelter *emerges*. Deterministic:
+        // no RNG draw, so seeded worlds with building off are byte-identical.
+        if self.cfg.can_build {
+            if let Some(me) = self.world.me() {
+                let hunger = self.drives.level(Drive::Hunger);
+                let thirst = self.drives.level(Drive::Thirst);
+                let needs_ok = hunger < CRITICAL && thirst < CRITICAL;
+                let exposed = me.enclosure < 0.75 && me.shelter_gap.is_some();
+                let threat_near = self
+                    .world
+                    .nearest_threat(me.pos)
+                    .map(|t| t.entity.pos.manhattan(me.pos) <= 5)
+                    .unwrap_or(false);
+                let recently_hurt = me.health < 0.85;
+                // FEAR OF DEATH biases toward shelter PREVENTIVELY: a mortal mind that
+                // dreads its own decline (high mortality salience) seeks walls before
+                // any wound or predator — the TMT worldview/shelter defence. Zero for
+                // immortal agents, so this only adds behaviour where mortality is on.
+                let dread = self.cfg.can_die && self.mortality > 0.5;
+                if needs_ok && exposed && (threat_near || recently_hurt || dread) {
+                    let kind = GoalKind::Shelter;
+                    let reason =
+                        "I'm out in the open and it's not safe — I'll wall myself in".to_string();
+                    // urgent enough to hold against routine pulls, below a true crisis.
+                    let pr = dom_pressure.clamp(0.6, 0.95);
+                    return self.apply_commitment(
+                        Goal { kind, origin: Drive::Survival, priority: pr },
+                        Process::Routine,
+                        reason,
+                        pr,
+                    );
+                }
+            }
+        }
+
+        // FEAR-OF-DEATH AFFILIATION (TMT's affiliation defence). A mind that feels
+        // its mortality keenly turns toward its own — being near others is a balm
+        // against the dread of the end. When mortality salience is high and no
+        // bodily crisis presses, the agent seeks out a *living* friend, preventively.
+        // Gated by can_die; the RNG draw is inside the gate so off-worlds are
+        // bit-identical. Shelter (above) is the other TMT defence; affiliation is this.
+        if self.cfg.can_die && self.mortality > 0.4 {
+            let hunger = self.drives.level(Drive::Hunger);
+            let thirst = self.drives.level(Drive::Thirst);
+            let crisis = hunger > CRITICAL || thirst > CRITICAL;
+            if !crisis {
+                if let Some(friend) = self.social.friendliest() {
+                    if friend.disposition > 0.0 && self.rng.chance(0.35 + 0.4 * self.mortality) {
+                        let fid = friend.id;
+                        let kind = GoalKind::Socialize(fid);
+                        let reason =
+                            "I can feel my own end out here — I don't want to face it alone".to_string();
+                        let pr = (0.55 + 0.3 * self.mortality).clamp(0.55, 0.9);
+                        return self.apply_commitment(
+                            Goal { kind, origin: Drive::Social, priority: pr },
+                            Process::Routine,
+                            reason,
+                            pr,
+                        );
+                    }
+                }
+            }
+        }
+
+        // MOURN: the loss-oriented pole of the Dual Process Model of grief (Stroebe
+        // & Schut 1999). A grieving mind does not mourn *constantly* — it OSCILLATES
+        // between loss-orientation (withdraw, idle, reminisce) and restoration
+        // (re-engage ordinary goals). We model the oscillation as a grief-weighted
+        // alternation: the fraction of ticks spent mourning rises with grief
+        // intensity and falls as it heals, so the mind swings between the two and,
+        // as the wound closes, returns fully to life. A genuine survival crisis
+        // (handled above) always pre-empts mourning — you flee the stalker even in
+        // grief. Gated by can_grieve; inert (and drawing no RNG) otherwise.
+        if self.cfg.can_grieve && self.grief > GRIEF_RESOLVED_BELOW {
+            // Even in grief the BODY comes first — a mind that withdrew while hungry
+            // would starve, turning mourning into a death spiral. So any meaningful
+            // hunger/thirst (not just a crisis) pulls the mind out of mourning and
+            // back to foraging: bereavement bends ordinary life, it does not abolish
+            // it. (Restoration-orientation in the Dual Process Model is exactly this
+            // pull of daily necessity.)
+            let hunger = self.drives.level(Drive::Hunger);
+            let thirst = self.drives.level(Drive::Thirst);
+            let needs_ok = hunger < 0.5 && thirst < 0.5;
+            // oscillate: mourn on a grief-weighted share of ticks. A small RNG draw
+            // gives the swing an organic, non-periodic rhythm (this is the only new
+            // RNG, and it is gated behind can_grieve — off-worlds are bit-identical).
+            let mourn_share = (0.2 + 0.5 * self.grief).clamp(0.0, 0.7);
+            if needs_ok && self.rng.chance(mourn_share) {
+                let kind = GoalKind::Mourn;
+                let reason = "the grief pulls me inward — I can't move on just yet".to_string();
+                let pr = (0.5 + 0.4 * self.grief).clamp(0.5, 0.9);
+                return self.apply_commitment(
+                    Goal { kind, origin: Drive::Social, priority: pr },
+                    Process::Routine,
+                    reason,
+                    pr,
+                );
+            }
+        }
+
+        // PROVISION: stock up against winter. An open-world, Mastery+foresight move,
+        // never a scripted "prepare for winter". When the mind has the provisioning
+        // affordance and the world is an open world (signalled by the body sensing a
+        // real season / an approaching winter), and its IMMEDIATE needs are met
+        // (hunger/thirst not pressing — the body always wins), it adopts a Provision
+        // goal IF it is harvest season (summer/autumn) OR winter is *anticipated*
+        // within its foresight horizon, and there is still gathering/storing to do.
+        // The foresight gene is what makes this PREVENTIVE: a foresighted mind reads
+        // `winter_in` and begins stocking before the cold, exactly the survival edge.
+        // Gated by can_provision; in a closed world `season`/`winter_in` are inert
+        // defaults (Spring, winter never) so this never fires and draws no RNG.
+        if self.cfg.can_provision {
+            if let Some(me) = self.world.me() {
+                let hunger = self.drives.level(Drive::Hunger);
+                let thirst = self.drives.level(Drive::Thirst);
+                // a comfortable margin below CRITICAL: bodily needs always pre-empt
+                // provisioning (you don't stockpile while you're starving).
+                let needs_ok = hunger < 0.6 && thirst < 0.6;
+                let harvest = me.season == 1 || me.season == 2; // summer / autumn
+                let winter = me.season == 3;
+                // anticipation: winter is within the foresight lead-time the mind has
+                // (the same faculty that forages ahead of hunger now stocks ahead of
+                // cold). Foresight 0 ⇒ purely reactive: only stocks once it IS harvest.
+                let lead = self.drives.foresight().max(1.0);
+                let winter_soon = me.winter_in <= lead;
+                // is there anything to do? In the good seasons: gather more, or carry a
+                // load home. In WINTER: there is nothing to gather (food has stopped),
+                // but a mind should come HOME to the hearth — store_dir homes toward it
+                // in winter — to draw on the village stores and stay warm. So winter
+                // work = "the hearth is somewhere to go".
+                let stocking = me.gather_dir.is_some() || (me.carrying > 0.05 && me.store_dir.is_some());
+                // in winter — and the late-autumn run-up to it — being at the hearth IS
+                // the work: walk home (store_dir homes toward it then) or rest there in
+                // the warmth, drawing the stores. The store_dir homing window (set by
+                // the world from `winter_in`) is what turns the abstract "winter soon"
+                // into a concrete pull toward the cache before the cold lands.
+                // The world hands a `store_dir` during the late-autumn → winter homing
+                // window (and to carry a load home in the good seasons). When it points
+                // home, coming to the hearth IS the provisioning act — we trust that
+                // world signal, which already encodes the right season window, so the
+                // foresight horizon and the homing window stay consistent.
+                let coming_home = me.store_dir.is_some();
+                let work = stocking || coming_home;
+                if needs_ok && (harvest || winter_soon || winter || coming_home) && work {
+                    let kind = GoalKind::Provision;
+                    let reason = if winter {
+                        "the cold is here — back to the hearth and the stores we laid by".to_string()
+                    } else if winter_soon {
+                        "winter is coming — I should put stores by while I can".to_string()
+                    } else {
+                        "it's the season of plenty — time to stock up for the lean months".to_string()
+                    };
+                    // a Mastery-strength pull: firm enough to hold against routine
+                    // exploration, well below any survival/forage crisis.
+                    let pr = (0.45 + 0.25 * self.persona.curiosity).clamp(0.45, 0.7);
+                    return self.apply_commitment(
+                        Goal { kind, origin: Drive::Mastery, priority: pr },
                         Process::Routine,
                         reason,
                         pr,
@@ -1584,7 +2092,15 @@ impl Mind {
                 let coord = self.world.belief(*id).map(|b| (b.entity.pos.x, b.entity.pos.y));
                 (name.clone(), coord, name)
             }
-            GoalKind::Explore | GoalKind::Recover => (None, Some((pos.x, pos.y)), None),
+            GoalKind::Explore | GoalKind::Recover | GoalKind::Shelter | GoalKind::Provision => {
+                (None, Some((pos.x, pos.y)), None)
+            }
+            // mourning names the dead friend (the continuing bond), so the narration
+            // can reminisce about them by name.
+            GoalKind::Mourn => {
+                let who = self.grieving_for.and_then(|id| self.social.model(id)).map(|m| m.name.clone());
+                (who.clone(), Some((pos.x, pos.y)), who)
+            }
         }
     }
 }
@@ -1668,7 +2184,11 @@ fn goal_drive(kind: &GoalKind) -> Drive {
         GoalKind::Flee(_) | GoalKind::Confront(_) => Drive::Survival,
         GoalKind::Investigate(_) | GoalKind::Explore => Drive::Curiosity,
         GoalKind::Socialize(_) => Drive::Social,
-        GoalKind::Recover => Drive::Survival,
+        GoalKind::Recover | GoalKind::Shelter => Drive::Survival,
+        // mourning is a social act (a severed bond), even as it looks like withdrawal.
+        GoalKind::Mourn => Drive::Social,
+        // provisioning is competence/foresight — building up a store of the future.
+        GoalKind::Provision => Drive::Mastery,
     }
 }
 

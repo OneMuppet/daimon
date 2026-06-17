@@ -32,6 +32,26 @@ pub enum GoalKind {
     Investigate(EntityId),
     /// Recover (rest) somewhere safe.
     Recover,
+    /// Make oneself safe by enclosing: wall the open sides until sheltered. A
+    /// survival goal the agent *adopts* when exposed under threat — the structure
+    /// (a hut) is never scripted; it emerges from repeating this.
+    Shelter,
+    /// Withdraw and grieve a lost friend — the loss-oriented pole of the Dual
+    /// Process Model of bereavement (Stroebe & Schut). The mind pulls back from
+    /// foraging/social initiative, idles, and reminisces about the dead; it
+    /// oscillates with restoration (ordinary) goals as grief decays. Adopted only
+    /// when a *bonded* peer has died (the `can_grieve` gene); a stranger's death
+    /// produces no Mourn goal — that asymmetry is the whole point.
+    Mourn,
+    /// Stock up against winter: gather a surplus of provisions while food is
+    /// abundant and store it in the shared village granary, so the cache can be
+    /// drawn down through the lean season. An open-world goal the agent *adopts*
+    /// from Mastery + foresight when its immediate needs are met and harvest season
+    /// is on (or winter is anticipated) — never scripted; provisioning emerges as
+    /// the high-value choice exactly as walling-in does for Shelter. Gated by the
+    /// `can_provision` gene + the world's `open_world` flag; absent both, no
+    /// Provision goal is ever adopted and the world stays bit-identical.
+    Provision,
 }
 
 impl GoalKind {
@@ -45,6 +65,9 @@ impl GoalKind {
             GoalKind::Socialize(_) => "socialize".into(),
             GoalKind::Investigate(_) => "investigate".into(),
             GoalKind::Recover => "recover".into(),
+            GoalKind::Shelter => "shelter".into(),
+            GoalKind::Mourn => "mourn".into(),
+            GoalKind::Provision => "provision".into(),
         }
     }
 }

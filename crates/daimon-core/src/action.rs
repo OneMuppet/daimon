@@ -6,7 +6,7 @@
 //! construction*. The world validates and resolves each action; the mind never
 //! touches world state directly.
 
-use crate::types::{Dir, EntityId};
+use crate::types::{Dir, EntityId, Pos};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -24,6 +24,19 @@ pub enum Action {
     /// Strike at an adjacent threat. Alone it does little (and invites harm); its
     /// power is *collective* — the agents are given this tool, not told to use it.
     Strike(EntityId),
+    /// Place a wall on an adjacent, in-bounds, empty cell — a generic build
+    /// affordance. Nothing tells the mind *what* to build; given a shelter need,
+    /// repeating this to enclose itself is how a shelter emerges.
+    Build(Pos),
+    /// Harvest a surplus of provisions (food/wood) from an adjacent abundant
+    /// source — the open-world "stock up while it's plentiful" affordance. Adds to
+    /// the body's carried provisions. Inert outside an open world (no provisions to
+    /// gather), so non-open worlds never resolve it to any effect.
+    Gather,
+    /// Deposit carried provisions into the shared village granary when adjacent —
+    /// the "store for winter" affordance. The cache it fills is drawn down in
+    /// winter. Inert outside an open world.
+    Store,
     /// Stand still and recover a little energy.
     Rest,
     /// Do nothing this tick (used when deliberation is pending).
@@ -40,6 +53,9 @@ impl Action {
             Action::Talk { .. } => "talk",
             Action::Inspect(_) => "inspect",
             Action::Strike(_) => "strike",
+            Action::Build(_) => "build",
+            Action::Gather => "gather",
+            Action::Store => "store",
             Action::Rest => "rest",
             Action::Wait => "wait",
         }
@@ -57,6 +73,9 @@ impl Action {
                 | Action::Talk { .. }
                 | Action::Inspect(_)
                 | Action::Strike(_)
+                | Action::Build(_)
+                | Action::Gather
+                | Action::Store
         )
     }
 }

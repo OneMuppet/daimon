@@ -289,7 +289,7 @@ mod tests {
     fn learns_a_novel_healing_affordance_with_no_builtin_knowledge() {
         let mut p = Praxis::default();
         let well = ent(3, EntityKind::Curio, "wellspring", 5, 5);
-        let mut body = SelfState { pos: Pos::new(5, 5), health: 0.4, energy: 0.9, hydration: 0.9 };
+        let mut body = SelfState { health: 0.4, energy: 0.9, hydration: 0.9, ..SelfState::new(Pos::new(5, 5)) };
         // stand beside the wellspring; the (simulated) world heals on proximity.
         for _ in 0..6 {
             p.observe(std::slice::from_ref(&well), Pos::new(5, 5), body);

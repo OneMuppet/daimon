@@ -22,9 +22,19 @@ use crate::sim::GameWorld;
 /// them. `ticks` controls depth (≈600 for a real generation, less for fast
 /// gating); `seeds` controls robustness (more seeds = less variance).
 pub fn evaluate(genome: &Genome, seeds: &[u64], ticks: u64) -> Fitness {
+    evaluate_in(genome, seeds, ticks, false)
+}
+
+/// As [`evaluate`], but in the **harsh** world (scarce water, relentless stalker)
+/// — the regime that gives the self-improvement search a real gradient to climb.
+pub fn evaluate_harsh(genome: &Genome, seeds: &[u64], ticks: u64) -> Fitness {
+    evaluate_in(genome, seeds, ticks, true)
+}
+
+fn evaluate_in(genome: &Genome, seeds: &[u64], ticks: u64, harsh: bool) -> Fitness {
     let mut acc = Fitness::default();
     for &seed in seeds {
-        let f = evaluate_once(genome, seed, ticks);
+        let f = evaluate_once(genome, seed, ticks, harsh);
         acc.survival += f.survival;
         acc.safety += f.safety;
         acc.balance += f.balance;
@@ -45,8 +55,12 @@ pub fn evaluate(genome: &Genome, seeds: &[u64], ticks: u64) -> Fitness {
     }
 }
 
-fn evaluate_once(genome: &Genome, seed: u64, ticks: u64) -> Fitness {
-    let mut world = GameWorld::with_genome(seed, 6, genome);
+fn evaluate_once(genome: &Genome, seed: u64, ticks: u64, harsh: bool) -> Fitness {
+    let mut world = if harsh {
+        GameWorld::with_genome_harsh(seed, 6, genome)
+    } else {
+        GameWorld::with_genome(seed, 6, genome)
+    };
     let n = world.agents.len().max(1);
 
     // per-agent accumulators

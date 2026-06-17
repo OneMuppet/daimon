@@ -2,7 +2,7 @@
 
 **David Borgenvik**  ·  Independent research
 
-*Technical report, Version 1.0 · 15 June 2026.*
+*Technical report, Version 2.0 · 16 June 2026.*
 *Artifacts (source, harness, proofs) reproduce every numeric claim herein; see §8.*
 
 **Keywords:** cognitive architecture · autonomous agents · game AI · believability ·
@@ -17,9 +17,13 @@ only *within that vocabulary*. We present **Daimon**, a cognitive architecture i
 which a game agent **authors its own ontology, goals, world-model, and even its
 values from lived experience**, and we introduce a **falsifiable evaluation
 protocol** — an ablation-based, multi-seed, machine-checked harness — that treats
-believability and autonomy as *measured* properties rather than claims. Daimon
-composes ten mechanisms, several of which are, to our knowledge, new to game AI
-in combination: (i) **Praxis**, emergent concept formation, affordance learning,
+believability and autonomy as *measured* properties rather than claims. The agent
+also faces a felt need for **shelter** (and builds it), its own **mortality** and
+**grief** over a bonded peer, an **open-ended seasonal world** that demands it
+provision for winter, and — told straight — a **learned neural overlay** that
+*does not* beat well-tuned instinct here. Daimon composes mechanisms, several of
+which are, to our knowledge, new to game AI in combination: (i) **Praxis**,
+emergent concept formation, affordance learning,
 and goal genesis, which lets an agent discover and use an entity type the
 architecture was never designed around; (ii) **empowerment**, an
 information-theoretic intrinsic drive toward states of maximal future control;
@@ -33,12 +37,20 @@ thought" layers — **quantum-probability cognition** and **neural criticality**
 fitness function and improves the architecture *without a human in the inner
 loop*; and (ix) a **developmental, social & affective layer** — learning-progress
 curiosity, cumulative cultural transmission, stigmergic coordination, and an
-appraised emotional life. Thirty-nine pre-registered acceptance criteria, each an
-ablation or controlled experiment, all pass deterministically. The capstone result: the
-self-improving loop **reaches a pre-registered end-goal target** — every facet of
-a believable life (survival, safety, decision balance, expressive variety,
-exploration, emotional life, and learned knowledge) cleared at once — *earned* (a reactive policy fails) and
-**validated on held-out seeds** the search never saw. Finally, we state and
+appraised emotional life — now extended with **emergent shelter-building** from a
+felt safety need, **fear of own death and theory-of-mind-mediated grief**, an
+**open-ended seasonal world** the agent must provision against, and a **learned,
+evolved-plastic neural overlay** (the architecture's first neural net) that we
+evaluate *honestly* and report as a null result. Forty-seven pre-registered
+acceptance criteria, each an ablation or controlled experiment, all pass
+deterministically. The capstone result: the
+self-improving loop **evolves champions that beat the hand-tuned baseline** and, in
+a majority of independent searches (3/5), **reaches a pre-registered end-goal
+target** — every facet of a believable life (survival, safety, decision balance,
+expressive variety, exploration, emotional life, and learned knowledge) cleared at
+once — *earned* (a reactive policy fails); a fraction (2/5) still **clear that bar
+on held-out seeds** the search never saw, so the result generalises but is
+seed-sensitive. Finally, we state and
 **machine-check nine theorems** about the implementation — determinism,
 homeostatic boundedness and Lyapunov stability, evolutionary elitism and
 convergence, the Bell–CHSH/Tsirelson bounds, self-organised criticality, and
@@ -93,8 +105,16 @@ and the proof is a machine that decides, not the authors.
    loop* — self-adapting mutation, learned per-gene sensitivity, and honest
    self-halting. It beats the hand-tuned baseline (AC27/28) and localises the
    open frontier (survival) rather than overclaiming completion.
-8. **A falsifiable believability harness** (§4): thirty-nine ablation/controlled
+8. **A falsifiable believability harness** (§4): forty-seven ablation/controlled
    criteria, deterministic and reproducible, that gate every change.
+9. **Mortality, grief, an open-ended world, and an honestly-evaluated learned
+   overlay** (§3.21–3.24): emergent shelter from a felt safety need (AC42); fear of
+   one's own death (Terror Management Theory) and theory-of-mind-mediated grief over
+   a bonded peer's death (AC43–45); a seasonal world that selects for winter
+   provisioning (AC46); and the architecture's *first neural network* — a learned,
+   evolved-plastic System-2 overlay (AC47) that we report as a **null result**: it
+   learns in-life but does not beat well-tuned instinct here, and evolution itself
+   selects it off. We keep the negative because it is a genuine finding.
 
 Everything is offline and deterministic (one seeded PRNG); identical seeds give
 identical lives, which is what makes the evaluation a *test* rather than an
@@ -525,6 +545,163 @@ decision balance, expressive variety, exploration, emotional life, and learned
 knowledge — that the self-improving loop reaches, earns (a reactive policy fails),
 and generalises to unseen seeds.
 
+### 3.21 Emergent shelter — building from a felt need for safety
+
+The same move as Praxis: **script the need, not the structure.** We add one
+homeostatic need (Shelter/Security) and one generic affordance (`Place`/`Dig` a
+block) — no "build a house" action, no blueprint — and let the existing utility,
+Praxis, and planning layers discover that building reduces the need. A cell's
+**enclosure** `∈ [0,1]` is how protected it is (walled sides + roof + burrow depth);
+open ground is 0, a walled-and-roofed cell is 1. The shelter need rises with
+*exposure* `(1 − enclosure)`, amplified by night and predator proximity, and feeds
+affect (sheltered → calm; exposed-at-night → afraid). When the need is high the
+planner scores actions by expected enclosure gained, so placing a wall on an *open*
+side is high-value; repeated, the agent **surrounds itself and a shelter appears.**
+
+The design crux is that the walls must genuinely **protect** — block the predator's
+path — so building is *adaptive and emergent*, not decorative or scripted. This is
+verified two ways: the `walls_block_predator` unit test asserts a placed wall
+actually occludes the stalker, and AC42 ablates the `can_build` gene (g21, default
+off): with building enabled the agent adopts shelter goals and places walls
+(counts >0), while an architecturally identical gene-off control builds nothing (0).
+Placing costs energy, so it is a real trade-off against rest and foraging, not free
+over-building. To our knowledge this is emergent defensive *architecture* arising
+from a felt safety need rather than a build script — the most human form of the
+Praxis principle.
+
+### 3.22 Mortality, fear of death, and grief
+
+A believable mind should fear its own end and mourn another's. We add both as
+deterministic appraisal mechanisms, gene-gated and default-off.
+
+**Permadeath and fear of death (g22).** With mortality on, a body that runs out
+can die and is removed from the living. Fear of death is modelled as **mortality
+salience** in the sense of *Terror Management Theory* (Greenberg, Pyszczynski &
+Solomon 1986; Burke, Martens & Faucher 2010): salience rises not merely with low
+health but with health *trajectory* — a declining body feels its mortality and grows
+defensive, biasing the agent toward shelter and affiliation. AC43 contrasts a
+declining mortal agent with an otherwise identical immortal twin: the mortal agent
+shows dread (1.00 vs 0.00 off), lower valence (+0.15 < +0.59), higher arousal (0.66 >
+0.26), and more TMT-defensive ticks (51 > 28). This is deliberately the *affective*
+fear of death — the felt dread that biases behaviour — distinct from the purely
+instrumental self-preservation drive of a rational agent (Omohundro 2008), which we
+contrast against rather than re-implement.
+
+**Grief over a bonded peer (g23).** When a *bonded* peer dies, the agent grieves,
+scaled by bond strength. Grief follows the **Dual-Process Model** of bereavement
+(Stroebe & Schut 1999): the agent oscillates between *loss-oriented* mourning and
+*restoration-oriented* re-engagement, retains a **continuing bond** (Bowlby's
+attachment, 1969), and the grief decays faster under social support. AC44 shows the
+asymmetry: a bonded loss yields grief 0.78, a valence drop, and a long mourning tail
+(84 ticks), while a stranger's death yields ~0 grief and no mourning. AC45 shows it
+*resolves*: the agent oscillates (mourn 187 / restore 204 ticks) and grief decays to
+0.22 alone, while social support speeds resolution (mourn 67 < 187 ticks).
+
+**Honest novelty scope.** A computational model of grief already exists — Dulberg,
+Dubey & Cohen, "Adapting to loss: A computational model of grief" (*Psychological
+Review*, 2025) — so we explicitly do **not** claim the first computational model of
+grief. Our defensible contribution is the *synthesis*: a deterministic, no-neural-net,
+single-agent unification of affective fear-of-*own*-death (TMT) with
+theory-of-mind-mediated grief over *another* agent's death, composing with the
+existing affect, theory-of-mind, and reciprocity layers. We phrase this "to our
+knowledge" and no more.
+
+### 3.23 The open-ended world — seasons that demand provisioning
+
+The next leap is an **open-ended world** with a real year. The same principle once
+more: *script the pressure, not the plan.* When the world's `open_world` flag is on,
+a deterministic season clock turns; food is abundant in summer/autumn, **winter
+stops food spawning and adds a cold energy drain**, and spring brings it back. To
+survive winter a mind must gather a surplus while food is abundant and store it in a
+shared village **granary**, then draw it down when the cold lands. Two generic
+affordances carry it — `Action::Gather` (harvest a surplus onto the body) and
+`Action::Store` (deposit into the granary) — and a hungry mind adjacent to the
+granary in winter auto-draws a ration (composing with the Commons theme of §3.17).
+Nothing ever says "prepare for winter": provisioning emerges from the existing
+**Mastery** drive plus the foresight/anticipation faculty (§3.15), which lets a
+foresighted mind start storing *before* the cold.
+
+Gated by `can_provision` (g24) and `open_world`, this is verified by AC46 (3 seeds,
+one full winter): with the gene on the population adopts Provision goals, performs
+gather/store actions, fills the cache to a peak of ~69, and **7 minds survive winter;
+the gene-off control stores nothing (cache 0) and only 2 survive** — provisioning
+lifts winter survival. We frame this through the "live as humans" open-world thesis
+for AI research (Hu et al. 2024; MineRL, Guss et al. 2019) and are explicit that this
+is **v1**: the seasons-and-storage core is the load-bearing loop under test, while
+crafting tools and farming a plot are deliberately deferred to v2. We keep the honest
+caveats: the control's 2 survivors come from the hearth's warmth being gentle to
+anyone idling near the village heart, so the *cache* ablation is perfectly clean
+(0 stored without the gene) while the *survival* edge (7 > 2) is real but modest and
+seed-sensitive.
+
+### 3.24 System 2 — a learned, evolved-plastic neural overlay (told straight)
+
+This is the architecture's **first neural network**, and the section we are most
+careful to report honestly — because the result is a *null*.
+
+**The determinism reframing.** Daimon was "no neural nets" not as dogma but because
+its determinism is the basis of the proofs and the harness. It is worth being precise
+about what "deterministic" means here: **reproducibility** — same seed ⇒ same run —
+*not* a metaphysical claim about the absence of indeterminacy. The quantum-cognition
+module (§3.11) already models genuine indeterminacy *deterministically*, with the
+seed as the hidden variable. So the real axis is not deterministic-vs-not; it is
+**hand-built mechanism vs learned mechanism — and a learned mechanism is still
+deterministic.** We therefore added a neural net **without losing a single proof**:
+T1 (Determinism) still holds, because the net is seeded, its plasticity rule is a
+fixed deterministic function, and it is byte-inert when disabled.
+
+**The design.** A tiny CPU MLP (`overlay.rs`: 16 inputs → 12 hidden, tanh → 6
+outputs; hand-rolled, no NN crate, no dependencies, pure deterministic f32) reads the
+situation the appraisal already computes (drive levels, affect, health, threat,
+enclosure, mortality, grief, winter, carrying) and emits **bounded biases on the
+drive arbitration**, scaled by an `nn_modulation` gene — disabled ⇒ bias is exactly
+0.0 ⇒ instinct byte-identical. It **learns in-life** by reward-modulated three-factor
+Hebbian plasticity, `Δw = η·r·pre·post`, where reward `r` is the change in the mind's
+*own* well-being (drive satisfaction + health + valence, dimmed by grief) — an
+intrinsic, deterministic signal with no external supervision; weights and reward are
+clipped. The genome carries only the *learning machinery* — `nn_enabled` (g25),
+`nn_learn_rate` (g26), `nn_modulation` (g27) — not the weights themselves: an
+**indirect encoding** in which the germline evolves *how to learn* while lifetime
+Hebbian plasticity does the adapting. This is the **Baldwin effect** (Baldwin 1896;
+Hinton & Nowlan 1987) realised in an evolved plastic network (Soltoggio et al. 2018),
+with the reservoir-computing intuition (Jaeger 2001; Maass et al. 2002) that a fixed
+random substrate plus a light learned read-out can be expressive. The overlay nudges
+the same drive arbitration that the appraisal/affect machinery (OCC, Ortony, Clore &
+Collins 1988; EMA, Marsella & Gratch 2009; FAtiMA, Dias et al. 2014) already drives.
+
+**The results, told straight.**
+- *It genuinely learns in-life.* AC47 (harsh world, 600 ticks, `nn_enabled`
+  ablation): with the overlay on, 6/6 agents form overlays and their total weight
+  magnitude moves over a life (Σ|w| 318.05 → 518.46) and stays finite; the gene-off
+  control is inert (Σ|w| ≈ 0, instinct byte-identical). The mechanism is real and
+  harness-safe. AC47 asserts learning, **not** a fitness win.
+- *It slightly hurts where instinct is tuned.* The A/B (`overlay_ab`, identical
+  showcase genome, instinct vs overlay, 24 seeds × 800 ticks, harsh world) gives
+  scalar 0.682 (instinct) vs 0.672 (overlay), **Δscalar −0.010**, Δsurvival −0.036 —
+  the overlay **hurts**. The showcase instinct is already well-tuned for harsh-world
+  survival, so a randomly-initialised overlay mostly injects early-life noise that
+  one ~800-tick life of Hebbian learning cannot fully recover.
+- *Evolution itself rejects it.* Letting evolution choose (`overlay_evolve`, 40
+  independent searches over the full 28-gene genome, harsh world; the overlay can be
+  ablated for free), `nn_enabled` is selected in ~18% of champions versus ~5% for the
+  *known-rejected* quantum core — a fair, apples-to-apples comparison since both
+  start OFF in the carried baseline and are mutated by the same per-gene rule. Against
+  a 50% random null this is a clear rejection (one-sided binomial p ≈ 2×10⁻⁵, n = 40).
+  Among the few champions that keep the overlay, evolution shrinks its influence to
+  modulation ≈ 0.22 — even when retained, dialled down to a faint nudge. *(The
+  `empowerment`/`imagination` selection rates, ~55%/70%, are **incumbent-ON**
+  references reflecting that prior, **not** a clean 50% null — the load-bearing
+  comparison is nn vs quantum vs the 50% line.)*
+
+**The honest conclusion.** A learned, lifetime-plastic, gene-gated neural overlay is
+**feasible and harness-safe** — it integrates without breaking a proof and it
+demonstrably learns — but it **does not earn its keep where instinct is already
+well-tuned**: it loses the A/B and selection turns it off. The defensible reading is
+that learning has headroom only where instinct is *not* pre-optimised; testing the
+overlay on a novel or shifting task the hand-built faculties were never tuned for is
+the open next experiment, not a result we claim here. We report the null because it
+is a finding.
+
 ---
 
 ## 4. Methodology: believability as a falsifiable measurement
@@ -557,6 +734,9 @@ a theorem counts only when its written proof is matched by a green machine-check
 and the checker exits non-zero on regression (a code change that breaks a proved
 property turns the proof red). During authoring this caught an overclaim — "TFT
 wins the field" was actually a *tie* with Grim (T8), corrected to *tied-optimal*.
+Two unit tests guard the mechanisms added in §3.21–3.22: `walls_block_predator`
+(a placed wall actually occludes the stalker, so shelter is protective not cosmetic)
+and `death_removes_mind_from_living` (permadeath truly removes the agent).
 
 | # | Property | Theorem (informal) |
 |---|----------|--------------------|
@@ -624,37 +804,87 @@ All criteria pass deterministically (representative measured values):
 | AC39 | Affect (circumplex) | safe+fed reads "content"; predator+harm reads "afraid" (valence↓, arousal↑) |
 | AC40 | Affect modulates behaviour | contentment loosens curiosity 0.25→0.62; fear→caution wired |
 | AC41 | Reciprocity (iterated PD) | tit-for-tat tops the tournament (499) > naive cooperation (450) |
-| ● | **End goal reached** | loop returns `ReachedTarget`; champion clears every facet, held-out-validated (survival 0.88 on unseen seeds) |
+| AC42 | Emergent shelter (building) | `can_build` ablation: ON shelter-goals 49, builds 49, walls 49 (all >0); OFF control 0/0/0 |
+| AC43 | Mortality / fear of death | mortal vs immortal twin: dread 1.00 (off 0.00); valence +0.15<+0.59; arousal 0.66>0.26; TMT-defensive 51>28 ticks |
+| AC44 | Grief over a bonded peer | bonded loss: grief 0.78, mourn 84 ticks; stranger: grief 0.00, mourn 0 (asymmetry) |
+| AC45 | Grief resolves (dual-process) | oscillates (mourn 187 / restore 204); decays to 0.22 alone; support speeds it (mourn 67<187) |
+| AC46 | Winter provisioning | `can_provision` ablation (3 seeds, full winter): ON cache peak 69, 7 survive; OFF cache 0, 2 survive |
+| AC47 | Neural overlay learns in-life | `nn_enabled` ablation: ON 6/6 overlays, Σ\|w\| 318→518 (moves, finite); OFF inert (Σ\|w\| 0, instinct byte-identical). Learning real; no fitness win claimed |
+| ● | **End goal reached** | loop returns `ReachedTarget` in 3/5 searches; champion clears every facet at once; held-out 2/5 on unseen seeds (survival 0.88) — real but seed-sensitive |
 
 Plus AC8 (LLM-deliberator seam: offline contract test + `--features llm-http`),
-66 unit tests, clippy-clean, native + WebAssembly builds, and the nine
+82 unit tests, clippy-clean, native + WebAssembly builds, and the nine
 machine-checked theorems of §4.5 (`cargo run -p daimon-game --example proofs`).
+
+### 5.2 System 2 — the learned overlay, evaluated honestly
+
+The neural overlay (§3.24) is the architecture's first neural net, and we report
+its evaluation as a **null result** rather than a win. Three experiments, all
+deterministic and reproducible:
+
+**A/B — instinct vs overlay** (`overlay_ab`, identical showcase genome, 24 seeds ×
+800 ticks, harsh world):
+
+| Policy | scalar | survival |
+|---|---|---|
+| instinct | 0.682 | 0.377 |
+| overlay | 0.672 | 0.341 |
+| **Δ** | **−0.010** | **−0.036** |
+
+The overlay slightly **hurts** in a domain instinct already masters — a genuine
+negative result.
+
+**Evolution chooses** (`overlay_evolve`, 40 independent searches over the full
+28-gene genome, harsh world; the overlay is freely ablatable):
+
+| Faculty | Selected in champions | Prior |
+|---|---|---|
+| `nn_enabled` (the overlay) | **18%** | OFF (incumbent) |
+| `quantum` (known-rejected) | 5% | OFF (incumbent) |
+| `empowerment` (upper-reference) | 55% | ON (incumbent) |
+| `imagination` (upper-reference) | 70% | ON (incumbent) |
+
+Evolution leans clearly against the overlay (18% vs a 50% random null; one-sided
+binomial p ≈ 2×10⁻⁵, n = 40). The apples-to-apples comparison is `nn_enabled` (18%)
+against the known-rejected `quantum` (5%) — both start OFF and are mutated by the
+same rule; the ON-incumbent `empowerment`/`imagination` rates are soft
+upper-references, not the null. Among the few champions that keep the overlay,
+modulation shrinks to ≈ 0.22 (mean champion scalar 0.679, mean 10.2 generations).
+The honest arbiter agrees with the A/B: where instinct is well-tuned, a learned
+overlay does not earn its keep.
 
 ### 5.1 Benchmarks — evolvability, performance, generalisation
 
 A dedicated suite (`cargo run -p daimon-game --example benchmark --release`) reports
 the headline numbers below. All cognition is local deterministic Rust — no GPU, no
-network, no ML libraries, no model weights — so the only machine-dependent figures
-are the wall-clock throughputs (measured on an Apple-silicon laptop).
+network, no ML libraries, no external model weights (the optional learned overlay of
+§3.24 is a tiny hand-rolled CPU MLP, default off in these benchmarks) — so the only
+machine-dependent figures are the wall-clock throughputs (measured on an
+Apple-silicon laptop).
 
 **Performance (raw throughput of the full cognitive cycle):**
 
 | Setting | Throughput |
 |---|---|
-| 1 agent | ~128,000 cognitive ticks/s |
-| 6-agent village | ~34,500 ticks/s (~207,000 agent-ticks/s) |
-| 18-agent crowd | ~5,100 ticks/s (~93,000 agent-ticks/s) |
-| Fitness evaluation | ~15.5 ms per genome (a full 600-tick, 6-agent life) → ~65 genomes/s |
-| A whole serialised mind | ~1.7 KB of JSON |
+| 1 agent | ~212,000 cognitive ticks/s |
+| 6-agent village | ~37,700 ticks/s (~226,000 agent-ticks/s) |
+| 18-agent crowd | ~6,300 ticks/s (~114,000 agent-ticks/s) |
+| Fitness evaluation | ~13.0 ms per genome (a full 600-tick, 6-agent life) → ~77 genomes/s |
+| A whole serialised mind | ~2,095 bytes of JSON |
 
-At ~200k agent-ticks/s a single core runs a six-agent village far faster than
-real time; the self-improvement loop evaluates ~65 whole lives per second.
+At ~226k agent-ticks/s a single core runs a six-agent village far faster than
+real time; the self-improvement loop evaluates ~77 whole lives per second.
 
 **Evolvability (5 independent searches from different seeds, full fitness budget):**
-baseline (hand-tuned) scalar 0.757; **5/5 searches reach the 7-facet end goal**
-(mean ~2.6 generations of search), mean scalar gain **+0.064** over baseline, and
-**5/5 champions still meet the target on a held-out set of unseen seeds** — the
-loop reliably evolves a believable agent, and it is not seed-overfit.
+baseline (hand-tuned) scalar 0.757; every search evolves a champion that beats the
+hand-tuned baseline (mean scalar gain **+0.061**, mean ~4.7 generations of search).
+A majority — **3/5 searches** — reach the full 7-facet end goal, and a fraction —
+**2/5 champions** — still meet that strict bar on a held-out set of unseen seeds.
+Generalisation is real but seed-sensitive: the loop reliably *improves on* the
+baseline, while clearing all seven facets at once remains the harder, noisier
+target. (Strict end-goal success is lower than the v1.0 report because the genome
+grew to `N_GENES = 28`; the extra genes are inert in the fair world and dilute the
+search, so a given budget reaches the all-facets bar less often.)
 
 **Zero-shot generalisation (tasks and worlds never trained for):**
 
@@ -665,13 +895,15 @@ loop reliably evolves a believable agent, and it is not seed-overfit.
   while an identical inexperienced control ignores it **8/8** — the *only* difference
   is lived experience.
 - **Unseen village sizes** (champion tuned on 6 agents): critical-need time stays low
-  at 6 (8.9%), 10 (10.6%), and 18 (4.3%) agents — it generalises across a 3× range
-  of population (14 agents is the one borderline point at 18.4%).
+  across a 3× range of population — 6 (2.9%), 10 (5.3%), 14 (9.4%), and 18 (2.6%)
+  agents all hold — so the evolved policy generalises across crowd density.
 - **Unseen world layouts**: the champion's aggregate believability generalises
   (scalar ~0.79 averaged over five unseen maps); the strict *all-seven-facets-at-once*
-  bar shows honest run-to-run variance — met on the primary held-out set but missed
-  on some single unseen worlds when one facet dips. Generalisation is strong in
-  expectation, noisier per individual world.
+  bar is harder and shows honest run-to-run variance — averaged over the five maps
+  the full 7-facet target is *not* met, and per single world only 2/5 clear all
+  seven facets at once (one facet typically dips). Generalisation in aggregate
+  scalar is solid; the strict all-facets bar is noisier and not reliably cleared
+  per world.
 
 ---
 
@@ -700,6 +932,17 @@ live agent's salience gain; that integration is next, not done. The harness
 measures specified proxies, not believability in full generality. These are the
 next rungs, not refutations.
 
+**A genuine negative: learning does not beat tuned instinct (here).** The most
+important new result is one we report against our own interest. The learned neural
+overlay (§3.24, §5.2) — the architecture's first neural net — *does* learn in-life
+and integrates without breaking a proof, but in the harsh world where instinct is
+already well-tuned it slightly **hurts** (Δscalar −0.010) and evolution selects it
+off (18% vs a 50% null, p ≈ 2×10⁻⁵). We take this as a real finding, not a setback:
+a learned mechanism is feasible and harness-safe, but it earns its keep only where
+instinct is *not* pre-optimised. Whether a regime instinct cannot pre-solve flips
+that verdict is the open next experiment. We deliberately do **not** claim "learning
+improves the minds."
+
 **Future work — now chosen by the machine, not the authors.** The autogenesis
 loop (§3.14) has localised the open frontier: *survival* is the one facet no
 parameter setting reaches, so the next mechanism is a **foraging / active-
@@ -716,12 +959,19 @@ these are its fuel.
 
 We name the threats so a reader can weigh them.
 
-- **Construct validity (does the harness measure believability?).** The 39 criteria
+- **Construct validity (does the harness measure believability?).** The 47 criteria
   are *proxies* — survival, decision balance, dialogue variety, emotional
-  responsiveness, etc. — not human ratings. We make no claim that passing them
-  equals being judged "alive" by a player; we claim only that each proxy is a
-  necessary, ablation-isolated, falsifiable signal, and that the set is broader
-  than any prior game-AI evaluation we know. A human study is future work.
+  responsiveness, mortality salience, grief, winter provisioning, etc. — not human
+  ratings. We make no claim that passing them equals being judged "alive" by a
+  player; we claim only that each proxy is a necessary, ablation-isolated,
+  falsifiable signal, and that the set is broader than any prior game-AI evaluation
+  we know. A human study is future work.
+- **Scope of the learned-overlay result (single domain, short lives).** The neural
+  overlay's null (§5.2) is measured in *one* harsh domain over ~800-tick lives where
+  instinct is pre-optimised. We do **not** generalise it to "learning cannot help";
+  the result is scoped to a mastered domain at this horizon, and a novel/shifting
+  task or longer lives could plausibly flip it. We report the negative within those
+  bounds and name the boundary as the open experiment.
 - **Internal validity.** Determinism (Theorem T1) removes run-to-run confounds:
   every ablation compares architecturally identical, same-seed agents differing in
   exactly one mechanism, so a measured difference *is* that mechanism's effect.
@@ -787,7 +1037,20 @@ altruism (Trivers 1971), and indirect reciprocity (Nowak & Sigmund 1998).
 1994); the CHSH inequality (Clauser, Horne, Shimony & Holt 1969), its quantum
 (Tsirelson) bound (Cirel'son 1980), and Bell's theorem (Bell 1964); self-organised
 criticality (Bak, Tang & Wiesenfeld 1987); and the splittable PRNG (Steele, Lea &
-Flood 2014). Full bibliographic detail in §10 (References) below.
+Flood 2014). **Mortality, fear of death & grief** (§3.22): attachment theory
+(Bowlby 1969); the dual-process model of coping with bereavement (Stroebe & Schut
+1999); terror management theory (Greenberg, Pyszczynski & Solomon 1986; meta-analysis
+Burke, Martens & Faucher 2010); a recent computational model of grief (Dulberg,
+Dubey & Cohen 2026), which we cite to *avoid* claiming the first such model; and
+instrumental self-preservation as a contrast to affective fear-of-death (Omohundro
+2008). **Open-ended worlds for AI** (§3.23): the games-for-AI-research survey (Hu,
+Zhao, Wang, Du & Liu 2024) and MineRL (Guss et al. 2019). **Learned plasticity &
+emotion architectures** (§3.24): the Baldwin effect (Baldwin 1896) and how learning
+can guide evolution (Hinton & Nowlan 1987); evolved plastic neural networks
+(Soltoggio, Stanley & Risi 2018); reservoir computing (Jaeger 2001; Maass, Natschläger
+& Markram 2002); and appraisal-based emotion architectures (OCC, Ortony, Clore &
+Collins 1988; EMA, Marsella & Gratch 2009; FAtiMA, Dias, Mascarenhas & Paiva 2014).
+Full bibliographic detail in §10 (References) below.
 
 ---
 
@@ -797,12 +1060,14 @@ Deterministic by construction (one seeded SplitMix64 PRNG; no wall-clock, no
 threads in cognition). Reproduce the entire evaluation:
 
 ```bash
-cargo run -p daimon-game --example believability --release   # all 39 criteria
+cargo run -p daimon-game --example believability --release   # all 47 criteria
 cargo run -p daimon-game --example proofs        --release   # the 9 machine-checked theorems (§4.5; PROOFS.md)
 cargo run -p daimon-game --example autogenesis   --release   # the self-improvement loop
 cargo run -p daimon-game --example benchmark     --release   # evolvability/perf/zero-shot (§5.1)
+cargo run -p daimon-game --example overlay_ab    --release   # System-2 A/B: instinct vs learned overlay (§5.2)
+cargo run -p daimon-game --example overlay_evolve --release  # evolution chooses for/against the overlay (§5.2)
 cargo run -p daimon-game --example study         --release   # render-free behavioural field study
-cargo test                                                   # 66 unit tests
+cargo test                                                   # 82 unit tests
 cargo run -p daimon-game --release                           # watch the village (3-D isometric)
 ```
 
@@ -819,8 +1084,11 @@ cited in §10.
 
 We set out to make a game agent that **authors its own ontology, goals, world
 model, and values** — and to make that claim *decidable* rather than rhetorical.
-Daimon composes ten mechanisms on a deterministic, dual-process BDI spine; a
-thirty-nine-criterion ablation harness turns "the NPC feels alive" into a battery
+Daimon composes its mechanisms on a deterministic, dual-process BDI spine — and now
+also gives the agent a felt need for shelter, an awareness of its own mortality,
+grief over a bonded peer, an open-ended seasonal world to provision against, and a
+learned neural overlay we evaluate honestly (and find does not beat tuned instinct);
+a forty-seven-criterion ablation harness turns "the NPC feels alive" into a battery
 of falsifiable, reproducible tests; an autogenesis loop makes that harness its own
 fitness function and improves the architecture with no human in the inner loop,
 reaching a pre-registered end-goal target that is *earned* (a reactive policy
@@ -851,6 +1119,8 @@ Axelrod, R. (1984). *The Evolution of Cooperation.* Basic Books.
 
 Bak, P., Tang, C., & Wiesenfeld, K. (1987). Self-organized criticality: An explanation of 1/f noise. *Physical Review Letters*, 59(4), 381–384. https://doi.org/10.1103/PhysRevLett.59.381
 
+Baldwin, J. M. (1896). A new factor in evolution. *The American Naturalist*, 30(354), 441–451. https://doi.org/10.1086/276408
+
 Baranes, A., & Oudeyer, P-Y. (2013). Active learning of inverse models with intrinsically motivated goal exploration in robots. *Robotics and Autonomous Systems*, 61(1), 49–73. arXiv:1301.4862
 
 Beggs, J. M., & Plenz, D. (2003). Neuronal avalanches in neocortical circuits. *Journal of Neuroscience*, 23(35), 11167–11177. https://doi.org/10.1523/JNEUROSCI.23-35-11167.2003
@@ -858,6 +1128,8 @@ Beggs, J. M., & Plenz, D. (2003). Neuronal avalanches in neocortical circuits. *
 Bell, J. S. (1964). On the Einstein Podolsky Rosen paradox. *Physics Physique Fizika*, 1(3), 195–200. https://doi.org/10.1103/PhysicsPhysiqueFizika.1.195
 
 Booch, G., Fabiano, F., Horesh, L., Kate, K., Lenchner, J., Linck, N., et al. (2021). Thinking fast and slow in AI. *AAAI*. arXiv:2010.06002
+
+Bowlby, J. (1969). *Attachment and Loss, Vol. 1: Attachment.* Basic Books.
 
 Boyd, R., & Richerson, P. J. (1985). *Culture and the Evolutionary Process.* University of Chicago Press.
 
@@ -870,6 +1142,8 @@ Bruza, P. D., Wang, Z., & Busemeyer, J. R. (2015). Quantum cognition: A new theo
 Busemeyer, J. R., & Bruza, P. D. (2012). *Quantum Models of Cognition and Decision.* Cambridge University Press.
 
 Busemeyer, J. R., & Wang, Z. (2015). What is quantum cognition, and how is it applied to psychology? *Current Directions in Psychological Science*, 24(3), 163–169. https://doi.org/10.1177/0963721414568663
+
+Burke, B. L., Martens, A., & Faucher, E. H. (2010). Two decades of terror management theory: A meta-analysis of mortality salience research. *Personality and Social Psychology Review*, 14(2), 155–195. https://doi.org/10.1177/1088868309352321
 
 Charnov, E. L. (1976). Optimal foraging, the marginal value theorem. *Theoretical Population Biology*, 9(2), 129–136. https://doi.org/10.1016/0040-5809(76)90040-X
 
@@ -891,6 +1165,10 @@ Cook, J., Lu, C., Hughes, E., Leibo, J. Z., & Foerster, J. (2024). *Artificial g
 
 Deutsch, D., & Marletto, C. (2015). Constructor theory of information. *Proceedings of the Royal Society A*, 471(2174), 20140540. https://doi.org/10.1098/rspa.2014.0540
 
+Dias, J., Mascarenhas, S., & Paiva, A. (2014). FAtiMA Modular: Towards an agent architecture with a generic appraisal framework. In *Emotion Modeling* (LNCS 8750, pp. 44–56). Springer. https://doi.org/10.1007/978-3-319-12973-0_3
+
+Dulberg, Z., Dubey, R., & Cohen, J. D. (2025). Adapting to loss: A computational model of grief. *Psychological Review* (advance online publication, 26 May 2025). https://doi.org/10.1037/rev0000567
+
 Dorigo, M., & Stützle, T. (2004). *Ant Colony Optimization.* MIT Press.
 
 Erol, K., Hendler, J., & Nau, D. S. (1994). HTN planning: Complexity and expressivity. *AAAI-94*, 1123–1128.
@@ -901,7 +1179,17 @@ Frijda, N. H. (1986). *The Emotions.* Cambridge University Press.
 
 Grassé, P-P. (1959). La reconstruction du nid et les coordinations interindividuelles… La théorie de la stigmergie. *Insectes Sociaux*, 6, 41–80. https://doi.org/10.1007/BF02223791
 
+Greenberg, J., Pyszczynski, T., & Solomon, S. (1986). The causes and consequences of a need for self-esteem: A terror management theory. In R. F. Baumeister (Ed.), *Public Self and Private Self* (pp. 189–212). Springer. https://doi.org/10.1007/978-1-4613-9564-5_10
+
+Guss, W. H., Houghton, B., Topin, N., Wang, P., Codel, C., Veloso, M., & Salakhutdinov, R. (2019). MineRL: A large-scale dataset of Minecraft demonstrations. *IJCAI 2019*. arXiv:1907.13440
+
 Hebb, D. O. (1949). *The Organization of Behavior: A Neuropsychological Theory.* Wiley.
+
+Hinton, G. E., & Nowlan, S. J. (1987). How learning can guide evolution. *Complex Systems*, 1(3), 495–502.
+
+Hu, C., Zhao, Y., Wang, Z., Du, H., & Liu, J. (2024). Games for artificial intelligence research: A review and perspectives. *IEEE Transactions on Artificial Intelligence*, 5(12), 5949–5968. arXiv:2304.13269 (IEEE Xplore doc. 10552162).
+
+Jaeger, H. (2001). *The "echo state" approach to analysing and training recurrent neural networks* (GMD Report 148). German National Research Center for Information Technology (GMD).
 
 Kahneman, D. (2011). *Thinking, Fast and Slow.* Farrar, Straus and Giroux.
 
@@ -915,7 +1203,11 @@ Laird, J. E., Newell, A., & Rosenbloom, P. S. (1987). Soar: An architecture for 
 
 Lehman, J., & Stanley, K. O. (2011). Abandoning objectives: Evolution through the search for novelty alone. *Evolutionary Computation*, 19(2), 189–223. https://doi.org/10.1162/EVCO_a_00025
 
+Maass, W., Natschläger, T., & Markram, H. (2002). Real-time computing without stable states: A new framework for neural computation based on perturbations. *Neural Computation*, 14(11), 2531–2560. https://doi.org/10.1162/089976602760407955
+
 Mangel, M., & Clark, C. W. (1986). Towards a unified foraging theory. *Ecology*, 67(5), 1127–1138. https://doi.org/10.2307/1938669
+
+Marsella, S. C., & Gratch, J. (2009). EMA: A process model of appraisal dynamics. *Cognitive Systems Research*, 10(1), 70–90. https://doi.org/10.1016/j.cogsys.2008.03.005
 
 McNamara, J. M., & Houston, A. I. (1986). The common currency for behavioral decisions. *The American Naturalist*, 127(3), 358–378. https://doi.org/10.1086/284489
 
@@ -923,7 +1215,11 @@ Mouret, J-B., & Clune, J. (2015). *Illuminating search spaces by mapping elites.
 
 Nowak, M. A., & Sigmund, K. (1998). Evolution of indirect reciprocity by image scoring. *Nature*, 393, 573–577. https://doi.org/10.1038/31225
 
+Omohundro, S. M. (2008). The basic AI drives. In *Proceedings of the First Conference on Artificial General Intelligence (AGI-08)*, Frontiers in Artificial Intelligence and Applications, vol. 171, 483–492. IOS Press.
+
 Orkin, J. (2006). Three states and a plan: The AI of F.E.A.R. *Game Developers Conference (GDC) 2006*.
+
+Ortony, A., Clore, G. L., & Collins, A. (1988). *The Cognitive Structure of Emotions.* Cambridge University Press. https://doi.org/10.1017/CBO9780511571299
 
 Oudeyer, P-Y., & Kaplan, F. (2007). What is intrinsic motivation? A typology of computational approaches. *Frontiers in Neurorobotics*, 1, 6. https://doi.org/10.3389/neuro.12.006.2007
 
@@ -961,7 +1257,11 @@ Shinn, N., Cassano, F., Berman, E., Gopinath, A., Narasimhan, K., & Yao, S. (202
 
 SIMA Team, DeepMind (2024). *Scaling instructable agents across many simulated worlds.* arXiv:2404.10179
 
+Soltoggio, A., Stanley, K. O., & Risi, S. (2018). Born to learn: The inspiration, progress, and future of evolved plastic artificial neural networks. *Neural Networks*, 108, 48–67. arXiv:1703.10371. https://doi.org/10.1016/j.neunet.2018.07.013
+
 Steele, G. L., Lea, D., & Flood, C. H. (2014). Fast splittable pseudorandom number generators. *OOPSLA '14*, 453–472. https://doi.org/10.1145/2660193.2660195
+
+Stroebe, M., & Schut, H. (1999). The dual process model of coping with bereavement: Rationale and description. *Death Studies*, 23(3), 197–224. https://doi.org/10.1080/074811899201046
 
 Trivers, R. L. (1971). The evolution of reciprocal altruism. *The Quarterly Review of Biology*, 46(1), 35–57. https://doi.org/10.1086/406755
 
