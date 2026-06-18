@@ -505,8 +505,28 @@ LEDE = ("Daimon is a deterministic, CPU-only, pure-Rust cognitive architecture i
 QUOTE = ("“Can the agent carve up its own world, set its own ends, model its own "
          "dynamics, and revise its own values — and can we <i>prove</i> it did, "
          "against things it was never built for?”")
-META1 = "Version 2.4      ·      18 June 2026      ·      9 theorems machine-checked"
-META2 = "45 ablation criteria   ·   88 tests   ·   deterministic   ·   pure-Rust   ·   A4"
+def _criteria_count():
+    """Derive the believability-criteria count from source so the cover never drifts.
+    Counts distinct ACn labels in believability.rs (the default-run criteria);
+    falls back to the last-verified value if the file can't be read."""
+    import os, re
+    src = os.path.join(os.path.dirname(__file__), os.pardir,
+                       "crates", "daimon-game", "examples", "believability.rs")
+    try:
+        with open(src, "r", encoding="utf-8") as f:
+            labels = set(re.findall(r"AC\d+", f.read()))
+        return len(labels) if labels else 46
+    except OSError:
+        return 46
+
+
+# Tests = verified `cargo test --workspace` count (a raw #[test] grep over-counts
+# vs what the workspace actually runs); update when the verified gate count changes.
+N_TESTS = 90
+N_CRITERIA = _criteria_count()
+META1 = "Version 2.5      ·      18 June 2026      ·      9 theorems machine-checked"
+META2 = (f"{N_CRITERIA} ablation criteria   ·   {N_TESTS} tests   ·   "
+         "deterministic   ·   pure-Rust   ·   A4")
 DATEISO = "2026-06-18"
 
 
@@ -585,7 +605,7 @@ def draw_running(c, page, total):
     c.setFillColor(MUTED)
     c.drawString(LM + 11 + pdfmetrics.stringWidth("DAIMON", "Sans-Bold", 8) + 6, hy,
                  "A Self-Authoring Cognitive Architecture")
-    c.drawRightString(PW - RM, hy, "Technical Report  ·  v2.4")
+    c.drawRightString(PW - RM, hy, "Technical Report  ·  v2.5")
     c.setStrokeColor(RULE)
     c.setLineWidth(0.6)
     c.line(LM, hy - 6, PW - RM, hy - 6)

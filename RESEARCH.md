@@ -2,7 +2,7 @@
 
 **David Borgenvik**  ·  Independent research
 
-*Technical report, Version 2.4 · 18 June 2026.*
+*Technical report, Version 2.5 · 18 June 2026.*
 *Artifacts (source, harness, proofs) reproduce every numeric claim herein; see §8.*
 
 **Keywords:** cognitive architecture · autonomous agents · game AI · believability ·
@@ -41,7 +41,7 @@ appraised emotional life — now extended with **emergent shelter-building** fro
 felt safety need, **fear of own death and theory-of-mind-mediated grief**, an
 **open-ended seasonal world** the agent must provision against, and a **learned,
 evolved-plastic neural overlay** (the architecture's first neural net) that we
-evaluate *honestly* and report as a null result. Forty-five pre-registered
+evaluate *honestly* and report as a null result. Forty-six pre-registered
 acceptance criteria, each an ablation or controlled experiment, all pass
 deterministically. The capstone result: the
 self-improving loop **evolves champions that beat the hand-tuned baseline** and, in
@@ -139,7 +139,7 @@ and the proof is a machine that decides, not the authors.
    loop* — self-adapting mutation, learned per-gene sensitivity, and honest
    self-halting. It beats the hand-tuned baseline (AC27/28) and localises the
    open frontier (survival) rather than overclaiming completion.
-8. **A falsifiable believability harness** (§4): forty-five ablation/controlled
+8. **A falsifiable believability harness** (§4): forty-six ablation/controlled
    criteria, deterministic and reproducible, that gate every change.
 9. **Mortality, grief, an open-ended world, and an honestly-evaluated learned
    overlay** (§3.21–3.24): emergent shelter from a felt safety need (AC42); fear of
@@ -902,7 +902,7 @@ All criteria pass deterministically (representative measured values):
 | ● | **End goal reached** | loop returns `ReachedTarget` in 3/5 searches; champion clears every facet at once; held-out 2/5 on unseen seeds (survival 0.88) — real but seed-sensitive |
 
 Plus AC8 (LLM-deliberator seam: offline contract test + `--features llm-http`),
-88 unit tests, clippy-clean, native + WebAssembly builds, and the nine
+90 unit tests, clippy-clean, native + WebAssembly builds, and the nine
 machine-checked theorems of §4.5 (`cargo run -p daimon-game --example proofs`).
 
 ### 5.2 System 2 — the learned overlay, evaluated honestly
@@ -1274,7 +1274,8 @@ well. What the architecture lacks is a faculty its vocabulary cannot express:
 **coordinated dispersal/evasion under a one-shot predator** — agents spreading and
 breaking line-of-sight together so a single near-instant-kill hunter cannot pick the
 village apart. That is a concrete pointer to future architecture work, not a vague
-shortfall.
+shortfall — *and a falsifiable hypothesis*. §5.8 takes it at its word, builds exactly
+that faculty, and reports what happened.
 
 **Framed honestly, a located ceiling is a *result*.** This is the natural bookend to
 the world-ceiling arc: §5.4 showed the *world* clamp masquerading as a mind limit
@@ -1286,6 +1287,68 @@ but **bounded by the expressive vocabulary of the architecture**: it can only co
 the faculties it has, and when the winning strategy lives outside that vocabulary,
 neither search nor hand-tuning finds it. The ceiling tells us exactly what to build
 next — and that is the point of locating it.
+
+### 5.8 Two swings at the hell ceiling: a falsified diagnosis and a temporal wall
+
+A located ceiling is only a *result* if the diagnosis that explains it survives
+testing. §5.7 named a specific culprit — a missing **coordinated-dispersal** faculty —
+and that is a hypothesis, not a verdict. We built it, tested it, and it was wrong.
+Then we built the *next* candidate and learned something sharper. Both faculties are
+gene-gated and default-off, so the harness stays byte-identical (T1 determinism still
+proves it); the experiments live on a branch and the dispersal faculty (`g28`,
+ablation-tested as AC48) is the one merged.
+
+**Swing 1 — coordinated dispersal (the §5.7 diagnosis, falsified).** We added a
+**selfish-herd evasion** faculty (`g28`, `Mind::set_herd_evasion`): when fleeing, a
+mind no longer runs straight away from the predator but scores escape candidates by
+`flee_gain + cohesion·iso_gain − danger`, pulling toward the ally centroid (never
+toward the predator) so the village flees *together* and stragglers are not picked
+off. It works as designed and **helps survival below the wall** (AC48; cohesion 0.6–0.86
+is selected and retained). But on the held-out hell ladder the ceiling **did not move**:
+it stayed at **H≈0.5**, and past H≈1.0 everything still collapsed to single digits.
+The §5.7 dispersal diagnosis is therefore **falsified** — coordinated evasion is not
+what hell was withholding. Honest correction of our own analysis, kept in the record.
+
+**Swing 2 — bunkering, and a physical-limit control first.** If the wall is not
+*who the predator reaches* but *that it reaches anyone at all*, the counter is to make
+it reach **no one**: fully seal into a predator-proof shelter and ride hell out on
+stored provisions. Before building anything, we ran a **physical-limit control**
+(`hell_bunker_phase0.rs`): a hand-tuned *ideal* bunker — already sealed, living off a
+larder — on the disjoint-seed ladder. The result is decisive: full sealing **defeats
+the predator outright** — the ideal bunker survives **56% at H≥1.0 with zero predator
+deaths** (every death is starvation). So hell's predator is *not* an unbeatable
+physical force; up to **H≈1.0** the wall is a **capability gap** (the architecture
+capped enclosure at 0.75, so walls never fully sealed), turning into a genuine
+physical wall only beyond ~H=1.0, where the predator's aggro covers the whole map and
+no foraging window remains — finite stores simply starve.
+
+So we built the faculty properly (`g29`, `can_bunker`, on the experiment branch):
+under imminent threat the 0.75 enclosure cap lifts to a **full predator-proof seal**,
+plus a new `Action::Open` / `GoalKind::Emerge` so a sealed mind can break back out when
+the threat passes — the *absence* of any wall-removal mechanism was the real reason for
+the original cap (a permanent seal is a self-built tomb). It is verified working (full
+seals at enclosure 1.000, build/seal/emerge all fire; ablation-tested) and again
+**helps the low-to-mid ladder** (61% vs 26% at H=0; 17% vs 8% at H=0.5). And again the
+**ceiling held at H≈0.5**; at H≥1.0 it is a dead heat in the single digits.
+
+**The refined diagnosis — a *temporal* wall.** The ideal control sealed *instantly*;
+the real architecture needs several ticks of building to close the final gap, and
+hell's predator moves **every** tick. Instrumentation (`hell_bunker_diag.rs`) shows full
+seals do fire but are rare and brief — the predator reaches the mind **mid-seal** and
+kills it before the wall closes. The bottleneck is not the vocabulary (the faculty
+exists and is correct) but **latency**: the seal cannot be erected faster than a fast,
+near-one-shot predator closes the distance. Hell past H≈0.5 is, on these held-out
+numbers, effectively a physical wall *for a build-a-seal strategy* — beatable only by a
+defence that is already in place when the predator arrives, which is a different kind of
+faculty (pre-positioning / anticipatory infrastructure) than anything we evolved here.
+
+**What two swings buy.** A ceiling that survives two distinct, well-motivated faculty
+swings — each of which *demonstrably works below the wall* — is far stronger evidence
+of a real limit than a single null. And the failures were informative, not flat: swing 1
+falsified the stated cause; swing 2's control proved the predator is beatable in
+principle and relocated the true obstacle from *expressive vocabulary* to *reaction
+time*. That is the honest shape of the hell arc — not "we found the missing faculty,"
+but "we named one, tested it, were wrong, and measured what the wall actually is."
 
 ---
 
@@ -1341,7 +1404,7 @@ these are its fuel.
 
 We name the threats so a reader can weigh them.
 
-- **Construct validity (does the harness measure believability?).** The 45 criteria
+- **Construct validity (does the harness measure believability?).** The 46 criteria
   are *proxies* — survival, decision balance, dialogue variety, emotional
   responsiveness, mortality salience, grief, winter provisioning, etc. — not human
   ratings. We make no claim that passing them equals being judged "alive" by a
@@ -1436,6 +1499,17 @@ guards its own claims (the same reproducibility/honesty ethos as §4, §8):
    The general discipline: before believing a surprising optimisation result, verify
    the winner is playing by the intended rules (here: confirm the champion is actually
    *mortal*). A metric is only as trustworthy as the constraints it cannot rewrite.
+6. **A diagnosis is a hypothesis — build it and let it be falsified.** §5.7 closed by
+   naming the faculty hell supposedly lacked (coordinated dispersal). It would have
+   been easy to leave that as a tidy closing claim. Instead we built it (§5.8, swing 1)
+   and the ceiling did not move — the diagnosis was **wrong**. Swing 2 (bunkering) then
+   ran a **physical-limit control before writing the faculty**, which proved the
+   predator is beatable in principle and relocated the real obstacle from *missing
+   vocabulary* to *seal latency vs. predator speed* — a wall we could only see by
+   measuring, not by reasoning. The discipline: when you explain a ceiling by pointing
+   at a missing capability, that explanation is testable, so test it; a self-diagnosis
+   that is never built is just a story. Two honest swings that both fail to crack a
+   wall are stronger evidence the wall is real than any amount of armchair attribution.
 
 The corrected result (§5.4) is the one we stand behind precisely because it survived
 this: a wrong first reading, overturned by clean primary data and the held-out
@@ -1516,7 +1590,7 @@ Deterministic by construction (one seeded SplitMix64 PRNG; no wall-clock, no
 threads in cognition). Reproduce the entire evaluation:
 
 ```bash
-cargo run -p daimon-game --example believability --release   # all 45 criteria
+cargo run -p daimon-game --example believability --release   # all 46 criteria
 cargo run -p daimon-game --example proofs        --release   # the 9 machine-checked theorems (§4.5; PROOFS.md)
 cargo run -p daimon-game --example autogenesis   --release   # the self-improvement loop
 cargo run -p daimon-game --example benchmark     --release   # evolvability/perf/zero-shot (§5.1)
@@ -1525,7 +1599,7 @@ cargo run -p daimon-game --example overlay_evolve --release  # evolution chooses
 cargo run -p daimon-game --example evolve_frontier --release # frontier evolution: weak minds → mastery, held-out (§5.3)
 cargo run -p daimon-game --example poet          --release   # POET vs direct EA at equal budget — honest null (§5.3)
 cargo run -p daimon-game --example study         --release   # render-free behavioural field study
-cargo test                                                   # 88 unit tests
+cargo test                                                   # 90 unit tests
 cargo run -p daimon-game --release                           # watch the village (3-D isometric)
 ```
 
@@ -1546,7 +1620,7 @@ Daimon composes its mechanisms on a deterministic, dual-process BDI spine — an
 also gives the agent a felt need for shelter, an awareness of its own mortality,
 grief over a bonded peer, an open-ended seasonal world to provision against, and a
 learned neural overlay we evaluate honestly (and find does not beat tuned instinct);
-a forty-five-criterion ablation harness turns "the NPC feels alive" into a battery
+a forty-six-criterion ablation harness turns "the NPC feels alive" into a battery
 of falsifiable, reproducible tests; an autogenesis loop makes that harness its own
 fitness function and improves the architecture with no human in the inner loop,
 reaching a pre-registered end-goal target that is *earned* (a reactive policy
