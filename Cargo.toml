@@ -6,6 +6,8 @@ members = [
     "crates/daimon-world",
     "crates/daimon-demo",
     "crates/daimon-game",
+    "crates/daimon-sdk",
+    "crates/daimon-ffi",
 ]
 
 [workspace.package]
@@ -19,6 +21,7 @@ repository = "https://github.com/onemuppet/daimon"
 daimon-core = { path = "crates/daimon-core" }
 daimon-mind = { path = "crates/daimon-mind" }
 daimon-world = { path = "crates/daimon-world" }
+daimon-sdk = { path = "crates/daimon-sdk" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

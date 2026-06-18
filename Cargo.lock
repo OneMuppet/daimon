@@ -481,6 +481,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "daimon-ffi"
+version = "0.1.0"
+dependencies = [
+ "daimon-sdk",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "daimon-game"
 version = "0.1.0"
 dependencies = [
@@ -508,6 +517,16 @@ version = "0.1.0"
 dependencies = [
  "daimon-core",
  "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "daimon-sdk"
+version = "0.1.0"
+dependencies = [
+ "daimon-core",
+ "daimon-mind",
  "serde",
  "serde_json",
 ]

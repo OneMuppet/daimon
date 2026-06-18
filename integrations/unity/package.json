@@ -1,0 +1,15 @@
+{
+  "name": "io.ampdlabs.daimon",
+  "version": "0.1.0",
+  "displayName": "Daimon Cognitive Engine",
+  "description": "Embed deterministic, drive-driven autonomous minds (the Daimon engine) in Unity NPCs via a native C ABI. Not an LLM: a compact, deterministic cognitive engine over a flat grid-world perception.",
+  "unity": "2021.2",
+  "keywords": ["ai", "npc", "agent", "cognitive", "daimon", "ffi"],
+  "samples": [
+    {
+      "displayName": "Daimon NPC",
+      "description": "A MonoBehaviour driving one NPC with a Daimon mind.",
+      "path": "Samples~"
+    }
+  ]
+}

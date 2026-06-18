@@ -1,0 +1,18 @@
+[package]
+name = "daimon-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "C ABI for Daimon — embed deterministic autonomous minds in Unity, Unreal, or any C/C++/C# host via a flat-JSON interface."
+
+# cdylib: the .dll/.dylib/.so Unity loads and Unreal can link dynamically.
+# staticlib: the .a/.lib for Unreal static linking.
+# lib (rlib): so the crate's own tests can exercise the C ABI in-process.
+[lib]
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[dependencies]
+daimon-sdk = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

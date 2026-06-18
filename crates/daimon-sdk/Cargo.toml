@@ -1,0 +1,13 @@
+[package]
+name = "daimon-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The Daimon SDK: embed deterministic, drive-driven autonomous minds in any game with two small mappings."
+
+[dependencies]
+daimon-core = { workspace = true }
+daimon-mind = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
