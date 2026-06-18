@@ -505,8 +505,8 @@ LEDE = ("Daimon is a deterministic, CPU-only, pure-Rust cognitive architecture i
 QUOTE = ("“Can the agent carve up its own world, set its own ends, model its own "
          "dynamics, and revise its own values — and can we <i>prove</i> it did, "
          "against things it was never built for?”")
-META1 = "Version 2.1      ·      18 June 2026      ·      9 theorems machine-checked"
-META2 = "47 ablation criteria   ·   82 tests   ·   deterministic   ·   pure-Rust   ·   A4"
+META1 = "Version 2.2      ·      18 June 2026      ·      9 theorems machine-checked"
+META2 = "47 ablation criteria   ·   84 tests   ·   deterministic   ·   pure-Rust   ·   A4"
 DATEISO = "2026-06-18"
 
 
@@ -585,7 +585,7 @@ def draw_running(c, page, total):
     c.setFillColor(MUTED)
     c.drawString(LM + 11 + pdfmetrics.stringWidth("DAIMON", "Sans-Bold", 8) + 6, hy,
                  "A Self-Authoring Cognitive Architecture")
-    c.drawRightString(PW - RM, hy, "Technical Report  ·  v2.1")
+    c.drawRightString(PW - RM, hy, "Technical Report  ·  v2.2")
     c.setStrokeColor(RULE)
     c.setLineWidth(0.6)
     c.line(LM, hy - 6, PW - RM, hy - 6)

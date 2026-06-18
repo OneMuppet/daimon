@@ -172,9 +172,67 @@ impl EnvParams {
         EnvParams { k }
     }
 
+    /// **UNBOUNDED difficulty** — the ceiling probe. For `d ∈ [0,1]` this is exactly
+    /// [`EnvParams::at_difficulty`] (same knob vector, same world), so the bounded axis
+    /// is reproduced verbatim. For `d > 1.0` it keeps the bounded knob vector at its
+    /// `D=1.0` setting (the bounded encode saturates there — `EnvParams`'s decode
+    /// clamps every `k` to `[0,1]`, so it *cannot* express anything harsher) and pushes
+    /// the RAW sim fields PAST those decode caps via [`EnvParamsX`] overrides. This is
+    /// how we ask "is the gen-12 plateau a *world* ceiling or an *architecture*
+    /// ceiling?": past `D=1.0` we keep making the world genuinely harsher and watch
+    /// whether minds keep coping.
+    ///
+    /// What `D > 1.0` means in knob terms (the extra harshness, applied per unit of
+    /// `e = d - 1.0`):
+    /// - **cold** `open_world_cold_scale`: the bounded axis tops out ≈2.87 (decode cap
+    ///   3.0). Unbounded, cold climbs `+1.3·e` with NO cap (the sim's cold drain
+    ///   multiplies `cold_scale` unclamped), so D=2.0 ≈ 4.2, D=3.0 ≈ 5.5 — winter bites
+    ///   ~2× harder than the bounded worst.
+    /// - **metabolism** `metabolism_scale`: bounded cap 0.9. Unbounded climbs `+0.45·e`
+    ///   uncapped (the field is read raw), so D=2.0 ≈ 1.35, D=3.0 ≈ 1.8 — you burn fuel
+    ///   far faster than any bounded world.
+    /// - **starvation** `starve_health_drain`: bounded worlds keep the default 0.010 at
+    ///   high D; unbounded climbs `+0.020·e` (so an empty body dies faster once it runs
+    ///   out), uncapped.
+    /// - **stalker**: the bounded axis CAPS the predator at bite≈0.805, period 3 (held
+    ///   moderate by design so death stays selective). Unbounded maxes it out: bite →
+    ///   1.3 (the decode ceiling) by D≈1.5 and period → 1 (moves every tick) at any
+    ///   d>1.0, then holds (the stalker mechanic itself saturates — see below).
+    /// - **food/water scarcity**: SATURATES. `build_world` floors patch counts at
+    ///   `.max(1.0)`, and the bounded encode already drives food→0.3/mind, water→
+    ///   0.25/mind at D=1.0. Past that there is essentially nothing left to remove
+    ///   (a handful of patches → the floor), so scarcity is a **world-encoding ceiling**
+    ///   — noted as a finding, not pushed further with a fake knob.
+    ///
+    /// HARSHEST world expressible: cold/metabolism/starvation are uncapped multipliers,
+    /// so in principle D can rise without limit — but two knobs SATURATE (scarcity at
+    /// its floor, stalker at bite 1.3 / period 1). New harshness mechanisms (multiple
+    /// predators, shorter year) would need sim surgery and are NOT added here; that is
+    /// itself the world-encoding's own ceiling.
+    pub fn at_difficulty_unbounded(d: f32) -> EnvParamsX {
+        if d <= 1.0 {
+            return EnvParamsX { base: EnvParams::at_difficulty(d), x: ExtraHarsh::none() };
+        }
+        let e = d - 1.0; // how far past the bounded ceiling
+        EnvParamsX {
+            base: EnvParams::at_difficulty(1.0), // bounded knobs pinned at their max
+            x: ExtraHarsh {
+                cold_add: 1.3 * e,
+                metab_add: 0.45 * e,
+                starve_add: 0.020 * e,
+                // max the stalker out past the bounded moderate cap: bite ramps to the
+                // decode ceiling 1.3 by e=0.5, period drops to 1 immediately.
+                stalker_bite: (0.805 + 1.0 * e).min(1.3),
+                stalker_period_one: true,
+            },
+        }
+    }
+
     /// Build a deterministic open world that realises this environment for the given
     /// per-agent genomes. Seeded entirely off `seed`. This is the *only* place env
-    /// params touch the sim, and it goes through the existing open-world surface
+    /// params touch the sim, and it goes through the existing open-world surface (kept
+    /// for the bounded D∈[0,1] axis; the unbounded ceiling probe uses
+    /// [`EnvParamsX::build_world`]).
     /// (`with_genomes_sized_harsh` + `set_open_world` + public field/setters), so it
     /// reuses the merged machinery rather than forking it.
     pub fn build_world(&self, seed: u64, genomes: &[Genome]) -> GameWorld {
@@ -198,6 +256,83 @@ impl EnvParams {
         let want_water = ((pop as f32) * self.water_per_mind()).round().max(1.0) as usize;
         world.set_resource_counts(want_food, want_water);
         world
+    }
+}
+
+/// Extra harshness applied ON TOP of a bounded [`EnvParams`] to push past the
+/// `D=1.0` knob ceiling. All-zero / `none()` means "no extra" so `D≤1.0` is
+/// byte-identical to the bounded build. Only [`EnvParamsX::build_world`] reads it;
+/// no harness path constructs it, so every default/AC/proof world is untouched.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ExtraHarsh {
+    /// Added to `open_world_cold_scale` past the bounded cap (uncapped).
+    pub cold_add: f32,
+    /// Added to `metabolism_scale` past the bounded cap (uncapped).
+    pub metab_add: f32,
+    /// Added to `starve_health_drain` past the bounded default (uncapped).
+    pub starve_add: f32,
+    /// Stalker bite to force (overrides the bounded moderate cap), 0 = leave bounded.
+    pub stalker_bite: f32,
+    /// Force the stalker to move every tick (period 1) — the lethal extreme.
+    pub stalker_period_one: bool,
+}
+
+impl ExtraHarsh {
+    /// No extra harshness — the bounded world stands as-is.
+    pub fn none() -> Self {
+        ExtraHarsh::default()
+    }
+    fn is_none(&self) -> bool {
+        self.cold_add == 0.0
+            && self.metab_add == 0.0
+            && self.starve_add == 0.0
+            && self.stalker_bite == 0.0
+            && !self.stalker_period_one
+    }
+}
+
+/// A bounded [`EnvParams`] plus optional extra harshness — the **unbounded
+/// difficulty** carrier (see [`EnvParams::at_difficulty_unbounded`]). For `D≤1.0`
+/// the extra is `none()` and this builds the exact bounded world; for `D>1.0` it
+/// overrides the raw sim fields past the bounded decode caps. Additive: no existing
+/// caller uses it.
+#[derive(Clone, Copy, Debug)]
+pub struct EnvParamsX {
+    pub base: EnvParams,
+    pub x: ExtraHarsh,
+}
+
+impl EnvParamsX {
+    /// Build the world: the bounded build, then (when `D>1.0`) push the raw sim fields
+    /// past their decode caps. The scarcity floor is shared with the bounded build, so
+    /// it saturates either way (a noted world-encoding ceiling).
+    pub fn build_world(&self, seed: u64, genomes: &[Genome]) -> GameWorld {
+        let mut world = self.base.build_world(seed, genomes);
+        if self.x.is_none() {
+            return world; // D≤1.0 ⇒ byte-identical to the bounded build.
+        }
+        // PAST the bounded ceiling: stack extra harshness on the raw fields. The sim
+        // reads cold/metabolism/starve unclamped, so these genuinely make the world
+        // harsher than any bounded D could.
+        world.open_world_cold_scale += self.x.cold_add;
+        world.metabolism_scale += self.x.metab_add;
+        world.starve_health_drain += self.x.starve_add;
+        if self.x.stalker_bite > 0.0 {
+            let period = if self.x.stalker_period_one { 1 } else { 3 };
+            world.set_stalker(self.x.stalker_bite, period);
+        }
+        world
+    }
+
+    /// The scalar difficulty this carrier represents (for the trace): the bounded
+    /// `difficulty()` for `D≤1.0`, extended monotonically past it by the cold add.
+    pub fn difficulty(&self) -> f32 {
+        if self.x.is_none() {
+            self.base.difficulty()
+        } else {
+            // cold_add = 1.3·(D-1); invert to recover D for the readout.
+            1.0 + self.x.cold_add / 1.3
+        }
     }
 }
 

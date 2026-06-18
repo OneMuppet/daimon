@@ -2,7 +2,7 @@
 
 **David Borgenvik**  ·  Independent research
 
-*Technical report, Version 2.1 · 18 June 2026.*
+*Technical report, Version 2.2 · 18 June 2026.*
 *Artifacts (source, harness, proofs) reproduce every numeric claim herein; see §8.*
 
 **Keywords:** cognitive architecture · autonomous agents · game AI · believability ·
@@ -878,7 +878,7 @@ All criteria pass deterministically (representative measured values):
 | ● | **End goal reached** | loop returns `ReachedTarget` in 3/5 searches; champion clears every facet at once; held-out 2/5 on unseen seeds (survival 0.88) — real but seed-sensitive |
 
 Plus AC8 (LLM-deliberator seam: offline contract test + `--features llm-http`),
-82 unit tests, clippy-clean, native + WebAssembly builds, and the nine
+84 unit tests, clippy-clean, native + WebAssembly builds, and the nine
 machine-checked theorems of §4.5 (`cargo run -p daimon-game --example proofs`).
 
 ### 5.2 System 2 — the learned overlay, evaluated honestly
@@ -1040,6 +1040,70 @@ heritable — but in this testbed they evolve **to a ceiling**: a step *toward*
 open-ended evolution, not a solution to it. The POET arm that would push past the
 ceiling is, at this budget, an honest null.
 
+### 5.4 Probing the ceiling: world or architecture?
+
+The §5.3 ceiling raised a sharp diagnostic question that decides where
+open-endedness must invest next: was the **gen-12 saturation** of frontier
+evolution a *bounded-world artefact* (the difficulty knob clamped at D=1.0, so
+there was simply no harder world to climb) or an *architecture limit* (the 28-gene
+mind had run out of capacity)? The two readings prescribe opposite next moves —
+*supply harder worlds* versus *enlarge the mind* — so the question is worth
+settling cleanly. We settle it with a dedicated probe (`examples/ceiling.rs`).
+
+**Method — the proven frontier setup, ratchet uncapped.** The probe is
+`evolve_frontier` (§3.25) *verbatim* in everything that matters — survival-selection
+in the open seasonal world, `K = 5` fixed-seed low-noise fitness, weak/random init,
+the auto-difficulty ratchet — with exactly one behavioural change: the ratchet's
+`D ≤ 1.0` clamp is removed. Past D=1.0 the bounded knob vector cannot express
+anything harsher (its decode saturates), so `EnvParams::at_difficulty_unbounded`
+pins the bounded knobs at their D=1.0 maximum and pushes the **raw** cold,
+metabolism, and starvation fields uncapped (cold `+1.3·e`, metabolism `+0.45·e`,
+starvation `+0.020·e` per unit `e = D − 1.0`). The run is `POP = 64`, up to 100
+generations (early-stop on a 15-generation frontier plateau), 2200-tick evaluation,
+and is deterministic and byte-reproducible like its parent (one seeded `Rng`;
+per-genome worlds seeded off run-seed + generation + slot). Additive: a new example
+plus one reused env helper; it touches no defaults, no `baseline()`/`showcase()`,
+no harness path, and does not modify the committed `evolve_frontier.rs`.
+
+**Result — WORLD-CEILING.** From weak, random genomes the population rode the
+uncapped ratchet **all the way to D = 3.86** — roughly **4× the old bounded
+plateau** of D=1.0 — sustaining ≥45% graded survival the entire way (peak D and
+max-sustained-D both 3.86). The confound-free arbiter is the held-out head-to-head:
+generation champions (gen 0 / 12 / 50 / 99) snapshotted and re-scored on the **same
+fixed worlds** with **held-out probe seeds** the search never optimised against, so
+only the genome differs and any gain is heritable.
+
+| Champion | D = 1.0 | D = 1.5 | D = 2.0 | D = 3.86 (hardest) |
+|---|---|---|---|---|
+| gen 0 (weak/random) | 23% / 0.27 | 13% / 0.19 | 7% / 0.15 | 2% / 0.11 |
+| gen 12 (old saturation) | 24% / 0.28 | 17% / 0.22 | 10% / 0.16 | 2% / 0.10 |
+| gen 50 | 100% / 0.84 | 100% / 0.82 | 100% / 0.81 | 100% / 0.78 |
+| gen 99 (final) | 100% / 0.82 | 100% / 0.81 | 100% / 0.80 | 100% / 0.78 |
+
+The reading is unambiguous. At D=1.0 the gen-12 champion survives **24%** — barely
+above the gen-0 baseline of 23% and far below the 100% it would show if it had truly
+mastered the world; on the bounded axis it had simply hit the clamp. Once the world
+can keep getting harder, improvement **continues far past gen 12**: at D=2.0 the
+gen-12 champion survives only **10%** while later champions reach **100%**, a margin
+of **+90 to +98 points** at the harder rungs (D≥1.5). The 28-gene architecture therefore
+held **large latent headroom** — the gen-12 plateau was the *clamped world*, not the
+mind walling out. **Open-endedness ⇒ keep supplying harder/new worlds**, not (here)
+a bigger genome.
+
+**Honest caveat — degree is not kind.** Two of the four difficulty axes *saturate*
+at D=1.0: resource scarcity bottoms out at the world's patch floor, and the stalker
+is maxed (bite 1.3, moves every tick) by D≈1.5. So escalation past D=1.0 leans
+increasingly on **cold, metabolism, and starvation** alone — a single *metabolic*
+axis. The population met it the metabolic way: the foresight/anticipation gene
+(§3.15) climbed from ≈0.4 to ≈0.9 as D crossed 1.0, exactly the lever for a world
+that punishes provisioning lag. That is a genuine adaptation, but it also means the
+frontier was conquered along *one kind* of hardship made progressively steeper. To
+keep the frontier open **and** breed *sharper, more varied* minds — not just more
+metabolically frugal ones — difficulty must grow in **kind** (new hazards: multiple
+predators, a shorter year, novel mechanics), not merely in **degree**. This sharpens
+the §5.3 path-to-open-endedness conclusion and motivates the co-evolving-curriculum
+direction (POET, and curriculum in kind) rather than a single uncapped scalar.
+
 ---
 
 ## 6. Discussion
@@ -1127,6 +1191,58 @@ We name the threats so a reader can weigh them.
 - **Throughput figures** (§5.1) are single-machine wall-clock numbers
   (Apple-silicon laptop) and are illustrative, not benchmarked across hardware.
 
+### 6.2 Lessons from a messy experiment
+
+We report this against our own interest, because it is the kind of error a
+reproducible artefact exists to catch — and catching it is itself evidence the
+method works. The ceiling experiment of §5.4 was, on its *first* pass, analysed
+**wrongly**: that analysis reported the **opposite** verdict — an architecture
+ceiling — on the strength of a spurious gen-0 baseline (≈80% survival, versus the
+true ≈23%). With a strong-looking baseline and little apparent late gain, "the mind
+has walled out" looked supported. It was not. The fault was in the *data path*, not
+the code: the trajectory had been read off a **live process stream while competing
+runs churned the same machine**, and a filesystem-cache artefact on the run host
+served **stale, mid-run** numbers — secondhand observation standing in for the
+primary on-disk result.
+
+A single **clean, deterministic** run — one process, undisturbed, its result read
+from the **fully-flushed on-disk file after the process exited** — overturned the
+verdict completely (the WORLD-CEILING result of §5.4, every number above taken from
+that file). The arbiter that exposed the error was the **confound-free, held-out
+head-to-head**: the bogus ≈80% gen-0 baseline flatly contradicted the *validated*
+frontier baseline (the §5.3 head-to-head puts a weak/random genome at 26% on the
+hardest bounded world, not 80%), and a baseline that strong is itself the tell that
+headroom is being hidden. Two internally-consistent measurements disagreed, so one
+was wrong; the clean primary run decided which.
+
+We state the four lessons as general methodology, because they are how the project
+guards its own claims (the same reproducibility/honesty ethos as §4, §8):
+
+1. **Trust clean primary data over secondhand or streamed observation.** A number
+   read mid-run off a shared, contended stream is not the result; the result is what
+   the finished process committed to disk. When the two disagree, the flushed
+   artefact wins — and the experiment is designed (deterministic, single-output,
+   fsync'd) so that artefact is unambiguous.
+2. **Verify the gen-0 baseline is genuinely weak before concluding "no
+   improvement."** Best-of-random is high-variance, and a strong *accidental*
+   baseline is the classic way to hide real headroom: if the starting point already
+   looks competent, later gains vanish into the noise and a true climb reads as a
+   plateau. Pin the baseline down (here: a confirmed ≈23% on the hardest world)
+   before drawing a ceiling.
+3. **Watch for saturating difficulty knobs.** A bounded knob that has hit its clamp
+   *masquerades* as an architecture limit — the world stops getting harder, so the
+   population stops improving, and it looks like the mind ran out. Confirm the world
+   can still get harder (§5.4 had to *uncap* the ratchet) before attributing a
+   plateau to the architecture.
+4. **One deterministic run, one output, read after completion — beats many churning
+   runs read mid-stream.** Throughput of *attempts* is not throughput of *evidence*.
+   A single undisturbed reproducible run yields a citable number; a flurry of
+   competing runs read while they execute yields confident, contradictory artefacts.
+
+The corrected result (§5.4) is the one we stand behind precisely because it survived
+this: a wrong first reading, overturned by clean primary data and the held-out
+arbiter that the harness was built to provide.
+
 ---
 
 ## 7. Related work
@@ -1211,7 +1327,7 @@ cargo run -p daimon-game --example overlay_evolve --release  # evolution chooses
 cargo run -p daimon-game --example evolve_frontier --release # frontier evolution: weak minds → mastery, held-out (§5.3)
 cargo run -p daimon-game --example poet          --release   # POET vs direct EA at equal budget — honest null (§5.3)
 cargo run -p daimon-game --example study         --release   # render-free behavioural field study
-cargo test                                                   # 82 unit tests
+cargo test                                                   # 84 unit tests
 cargo run -p daimon-game --release                           # watch the village (3-D isometric)
 ```
 
