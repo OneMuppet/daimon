@@ -2,7 +2,7 @@
 
 **David Borgenvik**  ·  Independent research
 
-*Technical report, Version 2.2 · 18 June 2026.*
+*Technical report, Version 2.3 · 18 June 2026.*
 *Artifacts (source, harness, proofs) reproduce every numeric claim herein; see §8.*
 
 **Keywords:** cognitive architecture · autonomous agents · game AI · believability ·
@@ -60,7 +60,20 @@ straight, this **saturates** — the population conquers the whole difficulty ax
 and plateaus — so it is genuine generational improvement *to a ceiling*, a step
 toward (not a solution to) open-ended evolution; a companion POET experiment is
 reported as an **underpowered null** (a tie with direct search at equal budget).
-Finally, we state and
+We then put the evolved mind head-to-head with the human one: against a **diverse,
+held-out battery** of five hard regimes (cold/metabolism, food/water scarcity,
+seasonal provisioning, a mixed-hardest world, and a predator swarm), evolution
+out-designed the **hand-tuned showcase** mind, **100% vs 33% aggregate survival
+(5/5 challenges)** — a **generalist** win we are careful to bound: the fixed human
+design scored only 33% because it was tuned for the original foraging regime and
+**generalises poorly out of its domain**, and the evolved champion **saturated at
+100% across all five**, so the battery did not find *its* ceiling either (the claim
+is "decisively superior here," not "superhuman in general"). A symmetric
+**co-evolution (Red Queen)** experiment is reported as an **honest partial**: an
+evolvable predator sharpened on a held-out mind panel (Δ=+0.12) but the minds did
+not (Δ=+0.01), because the gen-0 mind baseline was already ~80% survival — *no
+headroom to measure mind improvement* — a clean re-confirmation of a lesson the
+project had already learned the hard way. Finally, we state and
 **machine-check nine theorems** about the implementation — determinism,
 homeostatic boundedness and Lyapunov stability, evolutionary elitism and
 convergence, the Bell–CHSH/Tsirelson bounds, self-organised criticality, and
@@ -115,7 +128,7 @@ and the proof is a machine that decides, not the authors.
    loop* — self-adapting mutation, learned per-gene sensitivity, and honest
    self-halting. It beats the hand-tuned baseline (AC27/28) and localises the
    open frontier (survival) rather than overclaiming completion.
-8. **A falsifiable believability harness** (§4): forty-seven ablation/controlled
+8. **A falsifiable believability harness** (§4): forty-five ablation/controlled
    criteria, deterministic and reproducible, that gate every change.
 9. **Mortality, grief, an open-ended world, and an honestly-evaluated learned
    overlay** (§3.21–3.24): emergent shelter from a felt safety need (AC42); fear of
@@ -878,7 +891,7 @@ All criteria pass deterministically (representative measured values):
 | ● | **End goal reached** | loop returns `ReachedTarget` in 3/5 searches; champion clears every facet at once; held-out 2/5 on unseen seeds (survival 0.88) — real but seed-sensitive |
 
 Plus AC8 (LLM-deliberator seam: offline contract test + `--features llm-http`),
-84 unit tests, clippy-clean, native + WebAssembly builds, and the nine
+86 unit tests, clippy-clean, native + WebAssembly builds, and the nine
 machine-checked theorems of §4.5 (`cargo run -p daimon-game --example proofs`).
 
 ### 5.2 System 2 — the learned overlay, evaluated honestly
@@ -1104,6 +1117,104 @@ predators, a shorter year, novel mechanics), not merely in **degree**. This shar
 the §5.3 path-to-open-endedness conclusion and motivates the co-evolving-curriculum
 direction (POET, and curriculum in kind) rather than a single uncapped scalar.
 
+### 5.5 Co-evolution (Red Queen): a stronger predator, and a lesson re-learned
+
+The §5.3 path-to-open-endedness named **co-evolving adversaries** as one route past
+the saturating single-knob ceiling. We tested it directly
+(`examples/redqueen.rs`): give the predator its own evolvable **hunting-strategy
+genome** (5 genes — persistence, ambush, speed, target-weakest, target-isolated;
+the default decodes to the current stalker, so the harness path is byte-identical
+when the predator is unevolved) and co-evolve it against the 28-gene minds in a
+*fixed* moderate-difficulty arena — so the **Red Queen itself is the only moving
+difficulty**, not a ratchet. Each generation every mind is scored on survival
+against a sample of the current predators and every predator on catch-rate against
+a sample of the current minds, both averaged over a fixed seed-set (the low-noise
+selection of §3.25); 50 generations, mind-pop 30, pred-pop 18, deterministic.
+
+**The arms race was lopsided.** Mind survival never fell below **80%** across all
+50 generations, while predator catch-rate flailed in a **3–37%** band — the
+predator never gained durable purchase on the minds. The confound-free arbiter is
+the same held-out head-to-head as §5.3, run **symmetrically**: re-score early-vs-late
+predator champions on a **fixed held-out mind panel** (a spread from weak to
+showcase prey the predator never trained on), and early-vs-late mind champions on a
+**fixed held-out predator panel** (five hand-set hunting strategies the minds never
+trained on). The result is asymmetric and honest:
+
+- The **predator sharpened**: held-out catch-rate ladder **Δ = +0.12** — co-evolution
+  produced a genuinely better hunter on prey it never saw.
+- The **minds did not**: held-out survival ladder **Δ = +0.01** — flat.
+
+**Why — and the lesson it re-confirms.** The cause is not that minds cannot
+improve; it is that the **gen-0 mind baseline was already ≈80% survival in this
+arena, leaving no headroom to measure a mind gain.** A side already near the
+ceiling cannot show a heritable climb, exactly the failure mode §6.2 **Lesson #2**
+warns against ("verify the gen-0 baseline is genuinely weak before concluding
+no-improvement"). The §5.3/§5.4 frontier runs avoided it by *pinning the baseline
+weak* (≈23–26% survival, real headroom); this Red Queen arena did not, so the mind
+side was **under-powered by a too-strong baseline**. The honest verdict is therefore
+**PARTIAL**: co-evolving the predator produced a **stronger predator, not stronger
+minds** — a real arms-race signal on one side, and a clean live re-validation that
+Lesson #2 is not hindsight but a recurring trap the method must guard against. The
+fix for a future run is the same one §5.3 used: start the minds weak enough that
+their improvement has room to register against the evolving predator.
+
+### 5.6 Evolving a super mind: beating the human design
+
+The sharpest test of "do minds genuinely evolve" is to pit the evolved mind against
+the **best human-designed one**. We do that on a **diverse battery** rather than a
+single difficulty knob (`examples/super_mind.rs`): evolve a **generalist** from
+weak/random genomes against five *qualitatively different* hard regimes —
+`cold_metabolism`, `food_water_scarcity`, `seasonal_provision`, `mixed_hardest`,
+and a `predator_swarm` of brutal hand-set stalkers — each scored as mean graded
+survival over fixed seeds, so no single faculty can win all five. Critically, we
+**verified the gen-0 baseline weak before running** (aggregate **37.5%**, asserted
+< 40% — real headroom, the §6.2 Lesson #2 discipline applied up front this time).
+The arbiter is a **held-out battery** with **disjoint seeds the search never
+trained on**, comparing the evolved champion against the hand-tuned
+`Genome::showcase()` (the best human design, capability genes enabled, on identical
+footing) and the gen-0 champion. Per-challenge survival:
+
+| Challenge | EVOLVED | SHOWCASE | GEN-0 |
+|---|---|---|---|
+| cold_metabolism | **100%** | 22% | 25% |
+| food_water_scarcity | **100%** | 16% | 24% |
+| seasonal_provision | **100%** | 22% | 20% |
+| mixed_hardest | **100%** | 8% | 10% |
+| predator_swarm | **100%** | 97% | 89% |
+| **AGGREGATE** | **100%** | **33%** | **33%** |
+
+**The result.** The evolved champion **beat the hand-designed showcase mind on
+5/5 held-out challenges — 100% vs 33% aggregate survival** — climbing from 37%→100%
+aggregate by **~generation 15**. This is the project's clearest statement that
+evolution can out-design the best fixed human mind: on worlds and seeds it never
+optimised against, the evolved generalist dominates every regime.
+
+**Two honest caveats that bound the claim** (stated prominently, because the
+headline number invites over-reading):
+
+1. **The showcase scored only 33% — barely above the gen-0 baseline (also 33%) —
+   because it generalises poorly out of its domain.** The hand-tuned showcase was
+   designed for the *original foraging* regime, not this diverse hard battery, so
+   "evolution beat the human design" is true and fair *but partly because the fixed
+   design fails to transfer.* The honest framing is **not** "evolution is superhuman
+   in general"; it is that **evolution produced a robust *generalist* where a fixed
+   point-design did not.** A human re-tuning the showcase for these regimes would
+   close much of the gap.
+2. **The champion saturates at 100% across all five challenges — so the battery did
+   not find *its* ceiling.** As with the world-ceiling result (§5.4), a 100% wall
+   means the test ran out of difficulty before the mind ran out of capacity: the
+   champion has **more latent headroom** this battery cannot measure. "Super" here
+   means **decisively superior to the human design on this battery**, not maxed-out
+   or globally optimal.
+
+Together, §5.5 and §5.6 sharpen the §5.3 verdict from two directions. Evolution
+*does* produce minds that beat the fixed human design when the baseline is honestly
+weak and the test is diverse (§5.6); and when the baseline is *accidentally* strong,
+the very same machinery shows **no** measurable mind gain (§5.5) — not because
+evolution failed, but because Lesson #2's headroom condition was unmet. The two
+results are consistent, and the contrast is itself the evidence that the headroom
+discipline is real and load-bearing.
+
 ---
 
 ## 6. Discussion
@@ -1327,7 +1438,7 @@ cargo run -p daimon-game --example overlay_evolve --release  # evolution chooses
 cargo run -p daimon-game --example evolve_frontier --release # frontier evolution: weak minds → mastery, held-out (§5.3)
 cargo run -p daimon-game --example poet          --release   # POET vs direct EA at equal budget — honest null (§5.3)
 cargo run -p daimon-game --example study         --release   # render-free behavioural field study
-cargo test                                                   # 84 unit tests
+cargo test                                                   # 86 unit tests
 cargo run -p daimon-game --release                           # watch the village (3-D isometric)
 ```
 
@@ -1348,7 +1459,7 @@ Daimon composes its mechanisms on a deterministic, dual-process BDI spine — an
 also gives the agent a felt need for shelter, an awareness of its own mortality,
 grief over a bonded peer, an open-ended seasonal world to provision against, and a
 learned neural overlay we evaluate honestly (and find does not beat tuned instinct);
-a forty-seven-criterion ablation harness turns "the NPC feels alive" into a battery
+a forty-five-criterion ablation harness turns "the NPC feels alive" into a battery
 of falsifiable, reproducible tests; an autogenesis loop makes that harness its own
 fitness function and improves the architecture with no human in the inner loop,
 reaching a pre-registered end-goal target that is *earned* (a reactive policy
