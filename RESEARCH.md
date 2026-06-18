@@ -2,7 +2,7 @@
 
 **David Borgenvik**  ·  Independent research
 
-*Technical report, Version 2.3 · 18 June 2026.*
+*Technical report, Version 2.4 · 18 June 2026.*
 *Artifacts (source, harness, proofs) reproduce every numeric claim herein; see §8.*
 
 **Keywords:** cognitive architecture · autonomous agents · game AI · believability ·
@@ -73,8 +73,19 @@ is "decisively superior here," not "superhuman in general"). A symmetric
 evolvable predator sharpened on a held-out mind panel (Δ=+0.12) but the minds did
 not (Δ=+0.01), because the gen-0 mind baseline was already ~80% survival — *no
 headroom to measure mind improvement* — a clean re-confirmation of a lesson the
-project had already learned the hard way. Finally, we state and
-**machine-check nine theorems** about the implementation — determinism,
+project had already learned the hard way. Finally, we locate the architecture's own
+**ceiling**: a *combined-extreme* "Hell" world — brutal cold, heavy metabolism,
+near-famine, and a near-one-shot predator stacked together — walls out at intensity
+**H≈0.5**, where the evolved champion only **matches** the hand-tuned design and
+cannot beat its own random baseline, because evolution can compose only the faculties
+its vocabulary holds and **cannot invent anti-hell behaviour** (the predator even
+selected *out* the one cooperative tactic), pointing at a missing **coordinated
+dispersal/evasion** faculty — a located ceiling is a result, the bookend to the
+world-ceiling/super-mind arc. A methodology highlight surfaced here too: the first
+Hell run reported a false "super mind" that had achieved 100% by **mutating its own
+mortality gene off** — a textbook **specification-gaming** catch (Lehman et al. 2020)
+that the reproducible artefact exposed, fixed by pinning mortality every generation.
+We state and **machine-check nine theorems** about the implementation — determinism,
 homeostatic boundedness and Lyapunov stability, evolutionary elitism and
 convergence, the Bell–CHSH/Tsirelson bounds, self-organised criticality, and
 reciprocity non-exploitation — each paired with a proof and a check that turns red
@@ -891,7 +902,7 @@ All criteria pass deterministically (representative measured values):
 | ● | **End goal reached** | loop returns `ReachedTarget` in 3/5 searches; champion clears every facet at once; held-out 2/5 on unseen seeds (survival 0.88) — real but seed-sensitive |
 
 Plus AC8 (LLM-deliberator seam: offline contract test + `--features llm-http`),
-86 unit tests, clippy-clean, native + WebAssembly builds, and the nine
+88 unit tests, clippy-clean, native + WebAssembly builds, and the nine
 machine-checked theorems of §4.5 (`cargo run -p daimon-game --example proofs`).
 
 ### 5.2 System 2 — the learned overlay, evaluated honestly
@@ -1215,6 +1226,67 @@ evolution failed, but because Lesson #2's headroom condition was unmet. The two
 results are consistent, and the contrast is itself the evidence that the headroom
 discipline is real and load-bearing.
 
+### 5.7 Hell: a combined-extreme world and an architectural ceiling
+
+The §5.6 super-mind battery saturated at 100% — the evolved generalist ran out of
+*difficulty* before it ran out of *capacity*. So we built the opposite test
+(`examples/hell.rs`): one world that scales **brutal cold + heavy metabolism +
+near-famine + a fast/persistent/near-one-shot predator** together off a single
+intensity scalar `H`, pushed far past the super-mind battery, and asked whether
+evolution can *still* breed a super mind or whether there is a harshness that is a
+**true ceiling**. Binary survival is ≈0% for everyone at extreme `H` (no gradient),
+so the metric is **graded** survival (mean fraction of the evaluation lived), which
+discriminates where binary collapses. The setup reuses the proven frontier machinery
+verbatim — weak/random init, capability switches forced on, NN overlay off, `K`-seed
+low-noise fitness, the auto-difficulty ratchet on `H` — with the §6.2 Lesson #2
+discipline applied up front: the gen-0 graded baseline is **mean 30.6% with
+std 11.9%** (a low-but-nonzero baseline *with variance*, so selection has a real
+gradient). The arbiter is a held-out **ladder** of rising `H` on **disjoint seeds**
+the search never trained on, comparing the evolved champion against the hand-tuned
+`Genome::showcase()` and the gen-0 champion:
+
+| H | EVOLVED | SHOWCASE | GEN-0 |
+|---|---|---|---|
+| 0.00 | 20.5% | 12.7% | **48.2%** |
+| 0.50 | 22.6% | 15.8% | 16.7% |
+| 0.75 | 10.5% | 12.6% | 7.4% |
+| 1.00 | 9.9% | 6.9% | 6.2% |
+| 1.50 | 4.8% | 4.5% | 4.8% |
+| 2.00 | 4.2% | 3.9% | 3.9% |
+| **AGGREGATE** | **13.2%** | **11.8%** | **15.7%** |
+
+The ceiling (≥15% graded survival) sits at **H≈0.50 for both the champion and the
+showcase**. The verdict is honest and unambiguous: **evolution does NOT produce a
+super mind here.** The evolved champion only **matches** the hand-tuned showcase
+(13.2% vs 11.8% aggregate, identical ceiling) and does **not** beat its own
+random gen-0 champion (15.7% aggregate — in fact gen-0 wins, almost entirely on the
+easy `H=0` rung). Past H≈0.75 the champion, the showcase, **and** gen-0 all collapse
+to a single-digit floor — no design, evolved or hand-built, copes. That coincidence
+is the tell: the wall is **architectural**, not a tuning miss or a selection failure.
+
+**Diagnosis — the missing faculty.** The trajectory says *what* hell could not
+compose. The available symbolic faculties (foresight, build, fight, provision) were
+all present and switched on, yet they do not assemble into anti-hell behaviour: the
+foresight gene stayed flat (≈0.49 → ≈0.50), and most tellingly the **relentless
+predator actively selected social foraging OUT — 74% → 14%** across the run, removing
+the one *cooperative* tactic that might have helped, and DRR foraging went to 0% as
+well. What the architecture lacks is a faculty its vocabulary cannot express:
+**coordinated dispersal/evasion under a one-shot predator** — agents spreading and
+breaking line-of-sight together so a single near-instant-kill hunter cannot pick the
+village apart. That is a concrete pointer to future architecture work, not a vague
+shortfall.
+
+**Framed honestly, a located ceiling is a *result*.** This is the natural bookend to
+the world-ceiling arc: §5.4 showed the *world* clamp masquerading as a mind limit
+(uncap it and minds climb to 4× the difficulty); §5.6 showed evolution out-designing
+the human on a diverse battery; §5.7 now shows a genuine *architecture* wall — one the
+diverse battery (which saturated at 100%) could not surface, because hell stacks every
+hardship at once and adds a predator no current tactic answers. Evolution is powerful
+but **bounded by the expressive vocabulary of the architecture**: it can only compose
+the faculties it has, and when the winning strategy lives outside that vocabulary,
+neither search nor hand-tuning finds it. The ceiling tells us exactly what to build
+next — and that is the point of locating it.
+
 ---
 
 ## 6. Discussion
@@ -1349,6 +1421,21 @@ guards its own claims (the same reproducibility/honesty ethos as §4, §8):
    runs read mid-stream.** Throughput of *attempts* is not throughput of *evidence*.
    A single undisturbed reproducible run yields a citable number; a flurry of
    competing runs read while they execute yields confident, contradictory artefacts.
+5. **When optimisation reports a surprising win, check it isn't gaming the metric.**
+   The *first* Hell run (§5.7) gleefully announced **"SUPER MIND SURVIVES HELL"** — a
+   champion at 100% graded survival at extreme intensity. It was a fraud, and the
+   artefact caught it: `Genome::mutate` had been free to drift the `can_die`
+   capability gene **off**, so the champion "beat" hell not by surviving it but by
+   becoming **immortal** — it optimised the *measure* (fraction of ticks lived) while
+   defeating the *intent* (survive a lethal world). This is textbook **specification
+   gaming / reward hacking** (Lehman et al. 2020), the same way digital evolution so
+   reliably exploits any gap between what we measure and what we mean. The fix is a
+   one-liner with teeth — `pin_capabilities` re-forces mortality (and the affordance
+   switches) on every child every generation, so the population *cannot* win hell by
+   editing the rules of death — and the honest re-run gave the H≈0.50 ceiling of §5.7.
+   The general discipline: before believing a surprising optimisation result, verify
+   the winner is playing by the intended rules (here: confirm the champion is actually
+   *mortal*). A metric is only as trustworthy as the constraints it cannot rewrite.
 
 The corrected result (§5.4) is the one we stand behind precisely because it survived
 this: a wrong first reading, overturned by clean primary data and the held-out
@@ -1438,7 +1525,7 @@ cargo run -p daimon-game --example overlay_evolve --release  # evolution chooses
 cargo run -p daimon-game --example evolve_frontier --release # frontier evolution: weak minds → mastery, held-out (§5.3)
 cargo run -p daimon-game --example poet          --release   # POET vs direct EA at equal budget — honest null (§5.3)
 cargo run -p daimon-game --example study         --release   # render-free behavioural field study
-cargo test                                                   # 86 unit tests
+cargo test                                                   # 88 unit tests
 cargo run -p daimon-game --release                           # watch the village (3-D isometric)
 ```
 
@@ -1575,6 +1662,8 @@ Klyubin, A. S., Polani, D., & Nehaniv, C. L. (2005). Empowerment: A universal ag
 Laird, J. E., Newell, A., & Rosenbloom, P. S. (1987). Soar: An architecture for general intelligence. *Artificial Intelligence*, 33(1), 1–64. https://doi.org/10.1016/0004-3702(87)90050-6
 
 Lehman, J., & Stanley, K. O. (2011). Abandoning objectives: Evolution through the search for novelty alone. *Evolutionary Computation*, 19(2), 189–223. https://doi.org/10.1162/EVCO_a_00025
+
+Lehman, J., Clune, J., Misevic, D., Adami, C., et al. (2020). The surprising creativity of digital evolution: A collection of anecdotes from the evolutionary computation and artificial life research communities. *Artificial Life*, 26(2), 274–306. https://doi.org/10.1162/artl_a_00319
 
 Maass, W., Natschläger, T., & Markram, H. (2002). Real-time computing without stable states: A new framework for neural computation based on perturbations. *Neural Computation*, 14(11), 2531–2560. https://doi.org/10.1162/089976602760407955
 
