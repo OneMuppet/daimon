@@ -2,7 +2,7 @@
 
 **David Borgenvik**  ·  Independent research
 
-*Technical report, Version 2.0 · 16 June 2026.*
+*Technical report, Version 2.1 · 18 June 2026.*
 *Artifacts (source, harness, proofs) reproduce every numeric claim herein; see §8.*
 
 **Keywords:** cognitive architecture · autonomous agents · game AI · believability ·
@@ -50,7 +50,17 @@ target** — every facet of a believable life (survival, safety, decision balanc
 expressive variety, exploration, emotional life, and learned knowledge) cleared at
 once — *earned* (a reactive policy fails); a fraction (2/5) still **clear that bar
 on held-out seeds** the search never saw, so the result generalises but is
-seed-sensitive. Finally, we state and
+seed-sensitive. We then ask a sharper question — *do minds genuinely evolve over
+generations?* — and answer it with a confound-free proof: starting from weak,
+random genomes, generational survival-selection in an auto-ratcheting seasonal
+world drives **weak minds to mastery of the hardest world in ~12 generations**
+(on a fixed D=1.0 world with held-out, training-disjoint seeds: 26%→100%
+survival), the gain genuinely **heritable** because only the genome differs. Told
+straight, this **saturates** — the population conquers the whole difficulty axis
+and plateaus — so it is genuine generational improvement *to a ceiling*, a step
+toward (not a solution to) open-ended evolution; a companion POET experiment is
+reported as an **underpowered null** (a tie with direct search at equal budget).
+Finally, we state and
 **machine-check nine theorems** about the implementation — determinism,
 homeostatic boundedness and Lyapunov stability, evolutionary elitism and
 convergence, the Bell–CHSH/Tsirelson bounds, self-organised criticality, and
@@ -703,6 +713,60 @@ overlay on a novel or shifting task the hand-built faculties were never tuned fo
 the open next experiment, not a result we claim here. We report the null because it
 is a finding.
 
+### 3.25 Toward open-ended evolution — a self-inventing curriculum
+
+The autogenesis loop (§3.14) improves a policy against a *fixed* objective, and the
+honest reading there is that a static fitness saturates: our scalar-objective EA
+stalled (faculties stuck ≈50%, no gradient). But where the world poses a *real*
+survival problem (the seasonal winter of §3.23), evolution genuinely bit — the
+foresight gene climbed 0.55 → 0.95. That contrast frames the open question of this
+section: not "can we tune a genome?" but **"do minds genuinely evolve over
+generations, and can we prove the gain is heritable rather than an artefact of the
+test?"** We attack it two ways — a positive result we can stand behind (frontier
+evolution) and an honest null (POET).
+
+**Frontier evolution (`examples/evolve_frontier.rs`).** A plain generational GA over
+the 28-gene `Genome`, started from **weak, random genomes** (`Genome::random`, with
+only the open-world capability *switches* forced on so the relevant faculties are
+*available* to be selected — every adaptive gene starts random, so there is a long
+climb from a degraded mind to a competent one). Three fixes distinguish it from the
+saturated runs: (i) **select on survival in the open seasonal world**, a real
+gradient, not the saturated believability scalar; (ii) **low-noise fitness** — each
+genome is scored as the mean over `K = 5` *fixed* seeds (the same seeds for every
+genome in a generation), so selection acts on the genome, not the luck of one island
+(calibration showed single-seed fitness is ≈half luck); (iii) an **auto-difficulty
+ratchet** — a world-difficulty `D ∈ [0,1]` (mapped onto the open-world cold,
+metabolism, food/water scarcity, and stalker knobs via `EnvParams::at_difficulty`)
+that **rises when the population survives and falls when it doesn't**, holding the
+world *just beatable* so the gradient never saturates. Config: `POP = 96`, `K = 5`,
+36 generations, truncation (top 22% + 4 elites), mutation `σ = 0.06`, a 2200-tick
+evaluation. Deterministic: one seeded `Rng` drives all init/selection/reproduction
+and the per-genome worlds are seeded off `(run-seed, generation, seed-slot)`, so the
+whole run reproduces byte-identically. No neural nets; additive (a new example reusing
+the existing fitness surface, changing no defaults or harness path). The result, with
+its honest ceiling, is §5.3.
+
+**POET (`examples/poet.rs`).** The complementary idea is to *co-evolve the curriculum*
+rather than ratchet one knob — the **Paired Open-Ended Trailblazer** (Wang, Lehman,
+Clune & Stanley 2019): maintain a population of paired *(environment, agent)* pairs,
+generate child environments by mutating a parameter vector, admit a child only if it
+passes a **Minimal Criterion** (the best transferred agent scores inside a band
+`[mc_low, mc_high]` — neither trivially solved nor impossibly hard, keeping new worlds
+at the frontier of current capability), and periodically **transfer** agents across
+worlds so progress on one unlocks another (the stepping-stone mechanism). The crux of
+a fair test is **budget accounting**: one evaluation = one genome run on one world for
+`EVAL_TICKS`, and a single shared counter charges *every* inner-ES candidate, MC probe,
+and transfer probe to the same total budget `B`; a direct-EA control charges the
+identical unit, so both arms stop at the same `B`. We run it as an explicit,
+falsifiable head-to-head — and report it, in §5.3, as an *underpowered null* rather
+than dressing a tie as a win.
+
+The auto-difficulty ratchet is, in effect, an automatic **curriculum** (Bengio,
+Louradour, Collobert & Weston 2009): the world is kept at the edge of the
+population's competence, easy-to-hard, so the gradient is always informative — the
+same intuition POET pursues by co-evolving the environments instead of scheduling a
+single difficulty scalar.
+
 ---
 
 ## 4. Methodology: believability as a falsifiable measurement
@@ -906,6 +970,76 @@ search, so a given budget reaches the all-facets bar less often.)
   scalar is solid; the strict all-facets bar is noisier and not reliably cleared
   per world.
 
+### 5.3 Do minds evolve over generations?
+
+The autogenesis loop (§5) shows we can *tune* a genome; this asks the deeper
+question — **do weak minds genuinely improve over generations, and is the gain
+heritable?** The frontier-evolution run (§3.25, `examples/evolve_frontier.rs`)
+answers yes, with a confound-free proof, and we report the ceiling just as plainly.
+
+**The trajectory.** From weak, random genomes the auto-difficulty ratchet climbed
+**D = 0.10 → 1.00** while the population held survival high — i.e. the minds kept
+mastering progressively harder worlds rather than the world staying easy. Mean
+fitness rose **0.59 → 0.80** (early-thirds → late-thirds), and the hardest
+difficulty the population *sustained* at ≥ 45% survival rose **0.54 → 1.00**. So
+both the capability (hardest world held) and the score climbed together — the signature
+of genuine generational improvement.
+
+**The confound-free proof (the headline).** The trajectory above measures fitness at
+the *current* (rising) difficulty, which is confounded — a later generation faces a
+harder world. To isolate the genome, we snapshotted the generation champion at
+**gen 0 / 12 / 24 / 35** and re-evaluated each on the **same fixed worlds** with
+**held-out seeds** — a probe-seed set verified to have **0 / 180 overlap** with any
+training seed. Same world, same unseen seeds; only the genome differs, so any gain
+*is* heritable:
+
+| Champion | D = 0.6 | D = 0.8 | D = 1.0 (hardest) |
+|---|---|---|---|
+| gen 0 (weak/random) | 45% | 33% | **26%** (fit 0.29) |
+| gen 12 | 100% | 100% | **100%** (fit 0.83) |
+| gen 24 | 100% | 100% | **100%** (fit 0.84) |
+| gen 35 | 100% | 100% | **100%** (fit 0.84) |
+
+On the hardest world (D = 1.0) survival goes **26% → 100%** between a random starting
+genome and an evolved champion, on worlds and seeds the search never optimised
+against. The improvement is real and it is **genuinely heritable** — not an artefact
+of the difficulty ratchet, because the difficulty is held fixed here.
+
+**The honest ceiling (not buried).** Improvement **saturates by ~generation 12**:
+gen 12 ≈ gen 24 ≈ gen 35 (all 100% / ≈0.84 at D = 1.0). The population conquers the
+*entire* `D ∈ [0,1]` axis and then plateaus — there is no harder world left to climb.
+This is genuine generational improvement **to a ceiling**, **not** open-ended,
+unbounded evolution. Two further honesties: (1) the named "competence" genes did
+**not** tidily sweep — selection found a robust configuration and even *discarded*
+social-foraging and (partly) provisioning as dead weight in this regime; the win
+rides the **heritable survival gain**, not a clean gene-sweep story. (2) The gain is
+to mastery of *this* world's one difficulty knob; the minds literally ran out of
+*world*.
+
+**Path to open-endedness.** To never saturate, expand what "harder" means: a richer
+or unbounded difficulty space (beyond one scalar knob), a more expressive genome, or
+**co-evolving adversaries** (a Red Queen dynamic). The natural form of "the world
+keeps inventing new problems" is POET — which we tested next, and which did *not* yet
+deliver, honestly.
+
+**POET — an underpowered null.** At an equal evaluation budget **B = 1200** (every
+inner-ES, Minimal-Criterion, and transfer eval charged to the same shared counter,
+verified fair), POET's best agent scored **0.2461** on the hard target (difficulty
+0.88) versus a direct-EA control's **0.2477** — a **tie** (Δ = −0.0016, inside the
+±0.01 band). Crucially, POET's curriculum **plateaued at difficulty 0.52** and never
+reached the 0.88 target, so the stepping stones never approached the test
+environment. We therefore read this as **underpowered, not a refutation** of POET:
+the most likely causes are a budget too small for the curriculum to climb to the
+target's difficulty, an environment encoding too coarse for the stepping stones to
+transfer to the *specific* target, or transfer too rare. A real test of POET needs a
+larger budget and/or a leaner transfer scheme; we report the tie as a null and name
+the boundary rather than overclaiming.
+
+**Verdict.** Minds *do* evolve over generations — proven, confound-free, and
+heritable — but in this testbed they evolve **to a ceiling**: a step *toward*
+open-ended evolution, not a solution to it. The POET arm that would push past the
+ceiling is, at this budget, an honest null.
+
 ---
 
 ## 6. Discussion
@@ -1018,7 +1152,14 @@ evolution strategies and the 1/5th-success rule (Rechenberg 1973); novelty and
 open-endedness (Lehman & Stanley 2011; POET, Wang et al. 2019); quality-diversity
 (MAP-Elites, Mouret & Clune 2015); and AI-generating algorithms (Clune 2019), of
 which autogenesis (§3.14) is a small, falsifiable instance — search over a
-cognitive genome with the believability harness as the objective. **Foraging &
+cognitive genome with the believability harness as the objective.
+**Open-ended evolution & curriculum** (§3.25, §5.3): the Paired Open-Ended
+Trailblazer (POET, Wang, Lehman, Clune & Stanley 2019), which co-evolves paired
+(environment, agent) populations under a Minimal Criterion with cross-world transfer —
+the design our POET arm reproduces and reports honestly as an underpowered null; and
+curriculum learning (Bengio, Louradour, Collobert & Weston 2009), the easy-to-hard
+training principle our auto-difficulty ratchet instantiates as a self-adjusting,
+"just-beatable" world. **Foraging &
 homeostatic decision** (§3.15–3.16): homeostatic reinforcement learning (Keramati
 & Gutkin 2014, *eLife* 10.7554/eLife.04811); the marginal value theorem (Charnov
 1976, 10.1016/0040-5809(76)90040-X) and learned opportunity-cost-of-time
@@ -1067,6 +1208,8 @@ cargo run -p daimon-game --example autogenesis   --release   # the self-improvem
 cargo run -p daimon-game --example benchmark     --release   # evolvability/perf/zero-shot (§5.1)
 cargo run -p daimon-game --example overlay_ab    --release   # System-2 A/B: instinct vs learned overlay (§5.2)
 cargo run -p daimon-game --example overlay_evolve --release  # evolution chooses for/against the overlay (§5.2)
+cargo run -p daimon-game --example evolve_frontier --release # frontier evolution: weak minds → mastery, held-out (§5.3)
+cargo run -p daimon-game --example poet          --release   # POET vs direct EA at equal budget — honest null (§5.3)
 cargo run -p daimon-game --example study         --release   # render-free behavioural field study
 cargo test                                                   # 82 unit tests
 cargo run -p daimon-game --release                           # watch the village (3-D isometric)
@@ -1127,6 +1270,8 @@ Baranes, A., & Oudeyer, P-Y. (2013). Active learning of inverse models with intr
 Beggs, J. M., & Plenz, D. (2003). Neuronal avalanches in neocortical circuits. *Journal of Neuroscience*, 23(35), 11167–11177. https://doi.org/10.1523/JNEUROSCI.23-35-11167.2003
 
 Bell, J. S. (1964). On the Einstein Podolsky Rosen paradox. *Physics Physique Fizika*, 1(3), 195–200. https://doi.org/10.1103/PhysicsPhysiqueFizika.1.195
+
+Bengio, Y., Louradour, J., Collobert, R., & Weston, J. (2009). Curriculum learning. *Proceedings of the 26th International Conference on Machine Learning (ICML '09)*, 41–48. https://doi.org/10.1145/1553374.1553380
 
 Booch, G., Fabiano, F., Horesh, L., Kate, K., Lenchner, J., Linck, N., et al. (2021). Thinking fast and slow in AI. *AAAI*. arXiv:2010.06002
 

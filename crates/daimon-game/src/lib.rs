@@ -7,6 +7,7 @@
 
 pub mod evolve_mode;
 pub mod fitness;
+pub mod poet;
 pub mod geo;
 pub mod gfx;
 pub mod math;

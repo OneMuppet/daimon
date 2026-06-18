@@ -129,6 +129,12 @@ pub struct GameWorld {
     /// How much food the village granary holds (drawn down through winter). Starts
     /// empty — it only fills if minds actually provision.
     pub granary_food: f32,
+    /// OPEN-WORLD winter-cold multiplier. Default `1.0` (every harness/AC/proof path
+    /// keeps it, so they are byte-identical). Only the `open_world`-gated winter cold
+    /// drain reads it, so a closed world is unaffected regardless of its value. The
+    /// POET prototype tunes it per environment to make winter milder or more brutal —
+    /// the central "winter severity" curriculum knob — without forking the sim.
+    pub open_world_cold_scale: f32,
     /// Harvestable trees (a position + a wood level that depletes when gathered and
     /// regrows in spring). Empty unless `open_world`, so closed worlds carry none.
     pub trees: Vec<Tree>,
@@ -432,6 +438,7 @@ impl GameWorld {
             // the hearth sits at the village heart; inert until open_world.
             granary: Pos::new(w / 2, h / 2),
             granary_food: 0.0,
+            open_world_cold_scale: 1.0,
             trees: Vec::new(),
             rng,
             next_id,
@@ -563,6 +570,15 @@ impl GameWorld {
         self.predator.bite = 0.95; // very nearly the fair world's full bite
     }
 
+    /// POET-only stalker tuning: set the per-bite damage scale and movement period
+    /// directly, so an environment's predator lethality is a curriculum knob. Pure
+    /// setter on existing fields — no behaviour change for any harness path (they
+    /// never call it, keeping `bite=1.0`/`move_period` as built).
+    pub fn set_stalker(&mut self, bite: f32, move_period: u64) {
+        self.predator.bite = bite;
+        self.predator.move_period = move_period.max(1);
+    }
+
     /// LIVE-ONLY tuning for the generational evolution mode. The bare harsh island
     /// wipes ~99% of 1000 minds in a generation — too thin an elite (≈11 survivors)
     /// to breed a gradient. This loosens the world just enough that a generation
@@ -628,6 +644,53 @@ impl GameWorld {
         self.starve_health_drain = 0.010;
         // 3. stalker: ease it (still lethal, less of a spawn-position lottery).
         self.soften_stalker();
+    }
+
+    /// POET-only scarcity tuning: force the world to hold exactly `food`/`water`
+    /// resource patches. Added patches are placed deterministically off the world
+    /// RNG (same discipline as `tune_for_evolution`); the tail is culled when over.
+    /// Curios are untouched. No harness path calls this, so all default/AC/proof
+    /// worlds keep their as-built resource counts.
+    pub fn set_resource_counts(&mut self, food: usize, water: usize) {
+        for (kind, want, label) in [
+            (EntityKind::Food, food, "berries#"),
+            (EntityKind::Water, water, "spring#"),
+        ] {
+            let have = self.resources.iter().filter(|r| r.kind == kind).count();
+            if have < want {
+                let payload = if kind == EntityKind::Food { 0.45 } else { 0.55 };
+                for i in 0..(want - have) {
+                    let pos = Pos::new(
+                        self.rng.below(self.w as usize) as i32,
+                        self.rng.below(self.h as usize) as i32,
+                    );
+                    let id = EntityId(self.next_id);
+                    self.next_id += 1;
+                    self.resources.push(Resource {
+                        id,
+                        kind,
+                        pos,
+                        label: format!("{label}{i}"),
+                        alive: true,
+                        payload,
+                        respawn_at: None,
+                        pulse: self.rng.next_f32(),
+                    });
+                }
+            } else if have > want {
+                // cull the surplus from the tail (keep the earliest-placed for
+                // determinism), removing exactly `have - want` of this kind.
+                let mut to_remove = have - want;
+                let mut i = self.resources.len();
+                while i > 0 && to_remove > 0 {
+                    i -= 1;
+                    if self.resources[i].kind == kind {
+                        self.resources.remove(i);
+                        to_remove -= 1;
+                    }
+                }
+            }
+        }
     }
 
     /// Player action: drop a fresh patch of food at a world cell.
@@ -1150,6 +1213,9 @@ impl GameWorld {
         // (borrowed mutably below) is updated once after the per-agent loop.
         let winter = matches!(self.season(), Season::Winter);
         let hearth = self.granary;
+        // POET winter-severity multiplier (1.0 for every harness path, so they are
+        // byte-identical). Only scales the open-world winter cold below.
+        let cold_scale = self.open_world_cold_scale;
         let cache_avail = self.granary_food;
         let mut cache_drawn = 0.0f32;
         for a in &mut self.agents {
@@ -1181,7 +1247,7 @@ impl GameWorld {
                 let warm = near_hearth || a.body.enclosure >= 0.5;
                 // out in the open the cold is real but not instantly fatal — a mind
                 // has time to path home to the hearth; at the hearth it is near-nil.
-                let cold = if warm { 0.002 } else { 0.008 };
+                let cold = (if warm { 0.002 } else { 0.008 }) * cold_scale;
                 a.body.energy = (a.body.energy - cold).clamp(0.0, 1.0);
                 // AUTO-DRAW from the granary: a hungry mind close enough to the cache
                 // eats from the village stores. This is the payoff of provisioning —
