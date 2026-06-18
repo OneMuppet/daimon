@@ -66,6 +66,149 @@ pub struct Predator {
     /// Per-bite damage scale (1.0 = the default lethal stalker). The live game
     /// softens this so death is occasional, not constant.
     bite: f32,
+    /// The predator's **hunting-strategy genome**. `None` ⇒ the incumbent stalker
+    /// behaviour, reproduced BYTE-IDENTICALLY (same code path, same RNG draws, same
+    /// order) — so every existing test / AC / proof is unchanged. `Some(strategy)`
+    /// is read only by the Red-Queen co-evolution experiment, which evolves a
+    /// predator against the minds. See [`PredatorStrategy`].
+    strategy: Option<PredatorStrategy>,
+}
+
+/// How the predator targets and chases — the evolvable side of the Red-Queen
+/// co-evolution experiment. Five normalised genes in `[0,1]`, decoded into hunting
+/// knobs. The **[`PredatorStrategy::default`]** decodes to the *exact* incumbent
+/// stalker policy (aggro range 12, target the nearest agent, random-walk both when
+/// idle and during cooldown), and [`GameWorld::step_predator`] keeps a single fused
+/// code path so that when the strategy is the default — or absent — the RNG draws
+/// and resulting trajectory are byte-identical to the original stalker.
+///
+/// Genes (index → knob):
+/// * `0` **aggro range** — how far the predator detects/locks onto prey, decoded to
+///   `[4, 28]` Manhattan cells (default 12 = the incumbent `AGGRO`).
+/// * `1` **target mode** — `nearest` (<1/3), `weakest` (lowest health, 1/3..2/3),
+///   `isolated` (most distant from its own nearest neighbour, ≥2/3). Default
+///   `nearest`.
+/// * `2` **persistence** — when `< 0.5` the predator random-walks during its
+///   post-strike cooldown (the incumbent); when `≥ 0.5` it keeps pressing toward
+///   its target through cooldown (a relentless stalker). Default off (incumbent).
+/// * `3` **patrol vs random** — when out of aggro range and `≥ 0.5`, the predator
+///   patrols deterministically toward the village hearth (an ambush at the commons)
+///   instead of random-walking. Default off (random walk — the incumbent).
+/// * `4` **speed** — biases the move cadence: `< 0.5` keeps the world's built
+///   `move_period` (the incumbent); `≥ 0.5` makes the predator move every tick
+///   (faster). Default off (incumbent cadence).
+#[derive(Clone, Copy, Debug)]
+pub struct PredatorStrategy {
+    pub g: [f32; 5],
+}
+
+/// How the predator selects which agent to hunt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetMode {
+    Nearest,
+    Weakest,
+    Isolated,
+}
+
+impl Default for PredatorStrategy {
+    /// The incumbent stalker, in gene space: aggro 12 (`(12-4)/24 ≈ 0.333`), target
+    /// nearest, no cooldown persistence, random-walk (no patrol), world cadence.
+    fn default() -> Self {
+        PredatorStrategy { g: [(12.0 - 4.0) / 24.0, 0.0, 0.0, 0.0, 0.0] }
+    }
+}
+
+impl PredatorStrategy {
+    /// Decoded aggro range ∈ `[4, 28]` (default 12).
+    fn aggro(&self) -> i32 {
+        (4.0 + self.g[0].clamp(0.0, 1.0) * 24.0).round() as i32
+    }
+    fn target_mode(&self) -> TargetMode {
+        if self.g[1] < 1.0 / 3.0 {
+            TargetMode::Nearest
+        } else if self.g[1] < 2.0 / 3.0 {
+            TargetMode::Weakest
+        } else {
+            TargetMode::Isolated
+        }
+    }
+    fn persistent(&self) -> bool {
+        self.g[2] >= 0.5
+    }
+    fn patrols(&self) -> bool {
+        self.g[3] >= 0.5
+    }
+    fn fast(&self) -> bool {
+        self.g[4] >= 0.5
+    }
+
+    /// Is this the incumbent (default) policy on the behaviour-affecting genes?
+    /// When true, `step_predator` takes the original code path verbatim.
+    fn is_incumbent(&self) -> bool {
+        self.aggro() == 12
+            && self.target_mode() == TargetMode::Nearest
+            && !self.persistent()
+            && !self.patrols()
+            && !self.fast()
+    }
+
+    /// A uniformly random hunting genome (weak/random gen-0 init for the experiment).
+    pub fn random(rng: &mut Rng) -> Self {
+        PredatorStrategy { g: std::array::from_fn(|_| rng.next_f32()) }
+    }
+
+    /// Mutate each gene by a Gaussian step (reflection at the bounds), reusing the
+    /// shared seeded RNG. Analogous to [`daimon_mind::Genome::mutate`] for minds.
+    pub fn mutate(&self, sigma: f32, rng: &mut Rng) -> Self {
+        let mut g = self.g;
+        for x in &mut g {
+            let step = sigma * pred_gaussian(rng);
+            *x = pred_reflect01(*x + step);
+        }
+        PredatorStrategy { g }
+    }
+
+    /// Gene-frequency accessors used by the experiment's telemetry.
+    pub fn pursues_relentlessly(&self) -> bool {
+        self.persistent()
+    }
+    pub fn ambushes(&self) -> bool {
+        self.patrols()
+    }
+    pub fn is_fast(&self) -> bool {
+        self.fast()
+    }
+    pub fn aggro_range(&self) -> i32 {
+        self.aggro()
+    }
+    pub fn targets_weakest(&self) -> bool {
+        self.target_mode() == TargetMode::Weakest
+    }
+    pub fn targets_isolated(&self) -> bool {
+        self.target_mode() == TargetMode::Isolated
+    }
+}
+
+/// Standard-normal sample (Box–Muller) on the seeded RNG — mirrors the mind
+/// genome's mutator so the predator side is deterministic too.
+fn pred_gaussian(rng: &mut Rng) -> f32 {
+    let u1 = rng.next_f32().max(1e-6);
+    let u2 = rng.next_f32();
+    (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos()
+}
+
+/// Reflect a value back into `[0,1]`.
+fn pred_reflect01(mut x: f32) -> f32 {
+    for _ in 0..4 {
+        if x < 0.0 {
+            x = -x;
+        } else if x > 1.0 {
+            x = 2.0 - x;
+        } else {
+            break;
+        }
+    }
+    x.clamp(0.0, 1.0)
 }
 
 pub struct GameWorld {
@@ -414,6 +557,8 @@ impl GameWorld {
             // harsh world: the stalker moves every tick (twice as relentless).
             move_period: if harsh { 1 } else { 2 },
             bite: 1.0,
+            // None ⇒ the incumbent stalker policy; the Red-Queen experiment sets it.
+            strategy: None,
         };
 
         GameWorld {
@@ -577,6 +722,16 @@ impl GameWorld {
     pub fn set_stalker(&mut self, bite: f32, move_period: u64) {
         self.predator.bite = bite;
         self.predator.move_period = move_period.max(1);
+    }
+
+    /// Install an evolvable **hunting strategy** on the predator (the Red-Queen
+    /// co-evolution experiment). Setting the *default* strategy is behaviourally a
+    /// no-op: `step_predator` detects the incumbent policy and takes the original
+    /// code path verbatim, so the world stays byte-identical. Only a *non-default*
+    /// strategy changes the hunt. The harness never calls this, so all ACs/proofs/
+    /// tests keep `strategy: None` and are unchanged.
+    pub fn set_predator_strategy(&mut self, strategy: PredatorStrategy) {
+        self.predator.strategy = Some(strategy);
     }
 
     /// LIVE-ONLY tuning for the generational evolution mode. The bare harsh island
@@ -1356,6 +1511,24 @@ impl GameWorld {
     }
 
     fn step_predator(&mut self) {
+        // INCUMBENT FAST-PATH. With no strategy (the harness) or the default strategy
+        // (the Red-Queen control), run the ORIGINAL stalker verbatim — same target
+        // rule, same RNG draws, same order — so every test/AC/proof is byte-identical.
+        let incumbent = match self.predator.strategy {
+            None => true,
+            Some(s) => s.is_incumbent(),
+        };
+        if incumbent {
+            self.step_predator_incumbent();
+            return;
+        }
+        // EVOLVED PATH — only reached by a non-default Red-Queen predator strategy.
+        self.step_predator_evolved();
+    }
+
+    /// The original stalker policy, untouched. Kept as its own method so the fast-path
+    /// above is provably identical to the pre-experiment code.
+    fn step_predator_incumbent(&mut self) {
         // target the nearest *living* agent (the dead are not prey)
         let target = self
             .agents
@@ -1389,6 +1562,95 @@ impl GameWorld {
         // survival-need → wall-self-in → survive is a real closed loop. `walls` is
         // empty unless someone built, so non-building worlds are bit-identical (the
         // RNG draws above are unchanged; only this guard, always-true there, is new).
+        let new = if self.walls.contains(&new) { p } else { new };
+        self.predator.pos = new;
+        if new == tpos {
+            self.strike(tid);
+        }
+    }
+
+    /// The EVOLVED hunting policy — reached only when a non-default
+    /// [`PredatorStrategy`] is installed (the Red-Queen experiment). Mirrors the
+    /// incumbent's structure (target → on-top strike → move → wall-guard → reach
+    /// strike) but reads the strategy's genes for target selection, aggro range,
+    /// cooldown persistence, patrol vs random-walk, and speed. Never runs on a
+    /// harness world (those keep `strategy: None`).
+    fn step_predator_evolved(&mut self) {
+        let s = self.predator.strategy.expect("evolved path needs a strategy");
+        let p = self.predator.pos;
+
+        // --- target selection by strategy gene ---
+        let living: Vec<(EntityId, Pos, f32)> = self
+            .agents
+            .iter()
+            .filter(|a| a.alive)
+            .map(|a| (a.id, a.body.pos, a.body.health))
+            .collect();
+        if living.is_empty() {
+            return;
+        }
+        let target = match s.target_mode() {
+            TargetMode::Nearest => living
+                .iter()
+                .min_by_key(|(_, pos, _)| pos.manhattan(p))
+                .copied(),
+            TargetMode::Weakest => living
+                .iter()
+                // lowest health; tie-break by proximity for determinism
+                .min_by(|a, b| {
+                    a.2.total_cmp(&b.2)
+                        .then_with(|| a.1.manhattan(p).cmp(&b.1.manhattan(p)))
+                })
+                .copied(),
+            TargetMode::Isolated => living
+                .iter()
+                // the agent whose nearest neighbour is farthest (most isolated);
+                // tie-break by proximity to the predator.
+                .max_by(|a, b| {
+                    let iso = |me: &(EntityId, Pos, f32)| {
+                        living
+                            .iter()
+                            .filter(|o| o.0 != me.0)
+                            .map(|o| o.1.manhattan(me.1))
+                            .min()
+                            .unwrap_or(i32::MAX)
+                    };
+                    iso(a)
+                        .cmp(&iso(b))
+                        .then_with(|| b.1.manhattan(p).cmp(&a.1.manhattan(p)))
+                })
+                .copied(),
+        };
+        let Some((tid, tpos, _)) = target else { return };
+
+        if p.manhattan(tpos) == 0 {
+            self.strike(tid);
+            return;
+        }
+
+        // movement cadence: fast genes move every tick, else the world's period.
+        let period = if s.fast() { 1 } else { self.predator.move_period };
+        let in_cooldown = self.tick < self.predator.cooldown_until;
+
+        let new = if in_cooldown && !s.persistent() {
+            // incumbent-style scatter during cooldown
+            let d = Dir::ALL[self.rng.below(4)];
+            self.clamp(p.step(d))
+        } else if s.persistent() || self.tick.is_multiple_of(period) {
+            if p.manhattan(tpos) <= s.aggro() {
+                // chase
+                p.step(p.toward(tpos))
+            } else if s.patrols() {
+                // AMBUSH: deterministically march toward the village hearth and
+                // lie in wait at the commons, rather than random-walking.
+                p.step(p.toward(self.granary))
+            } else {
+                let d = Dir::ALL[self.rng.below(4)];
+                self.clamp(p.step(d))
+            }
+        } else {
+            p
+        };
         let new = if self.walls.contains(&new) { p } else { new };
         self.predator.pos = new;
         if new == tpos {
