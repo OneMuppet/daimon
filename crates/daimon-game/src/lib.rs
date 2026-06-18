@@ -7,6 +7,7 @@
 
 pub mod evolve_mode;
 pub mod fitness;
+pub mod hell;
 pub mod poet;
 pub mod redqueen;
 pub mod geo;
