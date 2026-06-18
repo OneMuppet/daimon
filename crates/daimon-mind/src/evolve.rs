@@ -31,7 +31,7 @@ use crate::mind::{Mind, MindConfig};
 use crate::persona::Persona;
 
 /// Number of genes in the cognitive genome.
-pub const N_GENES: usize = 28;
+pub const N_GENES: usize = 29;
 
 /// A cognitive genome: a point in the architecture's tunable space, stored as
 /// `N_GENES` normalised genes in `[0,1]` and decoded into real cognitive knobs.
@@ -88,6 +88,7 @@ impl Genome {
         g[25] = 0.0; // nn-overlay off (System-2 learned overlay disabled — incumbent)
         g[26] = 0.0; // nn learning-rate 0 (no in-life plasticity)
         g[27] = 0.0; // nn modulation 0 (overlay contributes zero bias)
+        g[28] = 0.0; // herd-evasion off (flee-straight-away — the incumbent behaviour)
         Genome { g }
     }
 
@@ -234,6 +235,26 @@ impl Genome {
     pub fn nn_modulation(&self) -> f32 {
         lerp(self.g[27], 0.0, 0.6)
     }
+    /// Whether **predator-aware coordination (selfish-herd / dispersal-evasion)** is
+    /// on. Off by default — a disabled faculty leaves the flee path computing the
+    /// exact straight-away-from-the-predator step it always did, so the instinct (and
+    /// the whole seeded harness) is byte-identical to the incumbent. When on, a
+    /// threatened mind composes fleeing the predator with an anti-isolation pull
+    /// toward its local prey group (Hamilton 1971, "Geometry for the Selfish Herd";
+    /// risk dilution), so it is not the lone straggler an isolated-target predator
+    /// picks off.
+    pub fn herd_evasion(&self) -> bool {
+        self.g[28] >= 0.5
+    }
+    /// The cohesion strength of the herd-evasion pull, in `[0, 1]` — how heavily the
+    /// "move toward the group" term weighs against the "move away from the predator"
+    /// term when composing the evasive step. Evolvable: the search tunes how
+    /// gregarious a threatened mind is. Decoded from the same gene as the switch, so
+    /// a value just over the 0.5 threshold is a timid herder, 1.0 a tight one.
+    pub fn herd_cohesion(&self) -> f32 {
+        // map [0.5,1.0] → [0.2,1.0] so even a freshly-flipped gene gives a real pull.
+        lerp((self.g[28] - 0.5).max(0.0) * 2.0, 0.2, 1.0)
+    }
 
     /// Express this genome as a live [`Mind`], applying the persona deltas on top
     /// of a base character (preserving its identity and diversity).
@@ -273,6 +294,7 @@ impl Genome {
             self.nn_learn_rate(),
             self.nn_modulation(),
         );
+        mind.set_herd_evasion(self.herd_evasion(), self.herd_cohesion());
         mind
     }
 
@@ -599,7 +621,7 @@ mod tests {
     fn engine_improves_and_learns() {
         let target = [
             0.9, 0.1, 0.8, 0.2, 0.7, 0.3, 0.6, 0.4, 1.0, 0.0, 1.0, 0.0, 1.0, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-            1.0, 0.5, 0.5,
+            1.0, 0.5, 0.5, 1.0,
         ];
         let eval = synthetic(target);
         let mut evo = Evolution::new(0xA11CE, 16, &eval);
@@ -660,6 +682,31 @@ mod tests {
         // and the config decode agrees.
         assert!(!Genome::baseline().config().can_die);
         assert!(!Genome::baseline().config().can_grieve);
+    }
+
+    #[test]
+    fn herd_evasion_is_off_in_baseline_and_showcase() {
+        // gene 28 (predator-aware coordination / selfish-herd) must default OFF in BOTH
+        // presets so every existing AC, proof, and fitness run stays byte-identical: the
+        // flee path then computes the exact incumbent straight-away step and draws no
+        // RNG. The hell_coord experiment flips it on by pinning the gene.
+        assert!(!Genome::baseline().herd_evasion());
+        assert!(!Genome::showcase().herd_evasion());
+        // and an OFF gene yields zero express-time cohesion intent (cohesion is only
+        // consulted when the switch is on).
+        assert!(Genome::baseline().g[28] < 0.5);
+        assert!(Genome::showcase().g[28] < 0.5);
+    }
+
+    #[test]
+    fn herd_cohesion_decodes_in_range_when_on() {
+        // a freshly-flipped gene (just over 0.5) still gives a real pull, and 1.0 maxes.
+        let mut g = Genome::baseline();
+        g.g[28] = 0.5;
+        assert!((g.herd_cohesion() - 0.2).abs() < 1e-5, "min cohesion at the threshold");
+        g.g[28] = 1.0;
+        assert!((g.herd_cohesion() - 1.0).abs() < 1e-5, "max cohesion at 1.0");
+        assert!(g.herd_evasion());
     }
 
     #[test]

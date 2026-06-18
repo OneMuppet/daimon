@@ -26,7 +26,7 @@ use crate::anticipation::Anticipation;
 use crate::learn::LearningProgress;
 use crate::deliberate::{Deliberator, DeliberationContext, HeuristicDeliberator};
 use crate::persona::Persona;
-use crate::planner::{plan_for, plan_for_with, region_of, Danger};
+use crate::planner::{plan_for_with, region_of, Danger, Herd};
 use crate::imagine::ForwardModel;
 use crate::overlay::{Overlay, N_IN};
 use crate::praxis::Praxis;
@@ -203,6 +203,19 @@ pub struct Mind {
     /// Whether last tick's action was a strike (for crediting the outcome).
     #[serde(default)]
     last_struck: bool,
+    /// PREDATOR-AWARE COORDINATION (selfish-herd / dispersal-evasion). When on, a
+    /// threatened mind's evasive step composes fleeing the predator with an
+    /// anti-isolation pull toward its local prey group's centroid / nearest ally
+    /// (Hamilton 1971; risk dilution), so it is not the lone straggler an
+    /// isolated-target predator targets. Off by default — the flee path then computes
+    /// exactly the straight-away step it always did, keeping seeded worlds with it off
+    /// byte-identical. No new RNG is drawn either way.
+    #[serde(default)]
+    herd_evasion: bool,
+    /// How heavily the herd-cohesion term weighs against fleeing, in `[0,1]`. Only
+    /// consulted when `herd_evasion` is on.
+    #[serde(default)]
+    herd_cohesion: f32,
     /// Other agents' current foraging claims `(resource_pos, their_urgency)`,
     /// supplied by the world each tick. Transient — never serialised.
     #[serde(skip, default)]
@@ -338,6 +351,8 @@ impl Mind {
             can_fight: false,
             confront_value: 0.0,
             last_struck: false,
+            herd_evasion: false,
+            herd_cohesion: 0.0,
             contention: Vec::new(),
             deliberator: Some(deliberator),
             anticipation: Anticipation::default(),
@@ -474,6 +489,18 @@ impl Mind {
     /// Give the agent the *option* to confront threats (not the instruction to).
     pub fn set_can_fight(&mut self, on: bool) {
         self.can_fight = on;
+    }
+    /// Enable predator-aware coordination (selfish-herd / dispersal-evasion) with the
+    /// given cohesion strength. Off by default — when off the flee path is byte-
+    /// identical to the incumbent straight-away flee. Nothing here tells the mind to
+    /// flock; the anti-isolation bias only ever fires while a predator is perceived.
+    pub fn set_herd_evasion(&mut self, on: bool, cohesion: f32) {
+        self.herd_evasion = on;
+        self.herd_cohesion = cohesion.clamp(0.0, 1.0);
+    }
+    /// Whether predator-aware coordination is active (for inspection / the AC).
+    pub fn herd_evasion(&self) -> bool {
+        self.herd_evasion
     }
     /// Give the agent the *option* to build shelter (not the instruction to). With
     /// it on, an exposed-and-threatened agent may adopt a Shelter goal and wall
@@ -1168,8 +1195,28 @@ impl Mind {
         };
         let kind = if confront { GoalKind::Confront(tid) } else { GoalKind::Flee(tid) };
         let goal = Goal { kind: kind.clone(), origin: Drive::Survival, priority: 1.0 };
+        // PREDATOR-AWARE COORDINATION: when the faculty is on, hand the flee planner
+        // this mind's local prey group so its evasive step composes flee + herd
+        // (selfish-herd anti-isolation). Off ⇒ `None`, byte-identical straight flee.
+        let allies = if self.herd_evasion { self.herd_positions() } else { Vec::new() };
+        let herd = if self.herd_evasion {
+            Some(Herd { cohesion: self.herd_cohesion, allies: &allies })
+        } else {
+            None
+        };
         // a reflex re-plans immediately and unconditionally.
-        self.plan = Some(plan_for(&goal, &self.world, &self.memory, &self.danger, &mut self.rng, p.tick));
+        self.plan = Some(plan_for_with(
+            &goal,
+            &self.world,
+            &self.memory,
+            &self.danger,
+            &mut self.rng,
+            p.tick,
+            None,
+            &[],
+            0.0,
+            herd,
+        ));
         let action = self.next_action();
         self.last_struck = matches!(action, Action::Strike(_));
         let inner = if confront {
@@ -1699,6 +1746,19 @@ impl Mind {
             } else {
                 (&[], 0.0)
             };
+            // PREDATOR-AWARE COORDINATION: supply the local prey group for the flee
+            // path (only matters for GoalKind::Flee; ignored for every other goal).
+            // Off ⇒ None ⇒ incumbent straight-away flee, byte-identical.
+            let allies = if self.herd_evasion && matches!(goal.kind, GoalKind::Flee(_)) {
+                self.herd_positions()
+            } else {
+                Vec::new()
+            };
+            let herd = if self.herd_evasion && matches!(goal.kind, GoalKind::Flee(_)) {
+                Some(Herd { cohesion: self.herd_cohesion, allies: &allies })
+            } else {
+                None
+            };
             self.plan = Some(plan_for_with(
                 goal,
                 &self.world,
@@ -1709,6 +1769,7 @@ impl Mind {
                 forage_override,
                 contention,
                 my_urgency,
+                herd,
             ));
         }
     }
@@ -1843,6 +1904,19 @@ impl Mind {
                 );
             }
         }
+    }
+
+    /// The herd-evasion parameters for the planner's flee path: `Some(Herd)` with
+    /// this mind's cohesion and the positions of its *visible* allies (the local prey
+    /// group it can actually coordinate with) when the faculty is on AND there is a
+    /// group to herd toward; `None` otherwise — which the planner reads as the
+    /// incumbent straight-away flee. No RNG, so off-worlds stay byte-identical.
+    fn herd_positions(&self) -> Vec<Pos> {
+        self.world
+            .visible_of(EntityKind::Agent)
+            .iter()
+            .map(|e| e.pos)
+            .collect()
     }
 
     /// How dangerous the agent believes a position is (0 = safe).

@@ -35,6 +35,17 @@ fn danger_at(danger: &Danger, p: Pos) -> f32 {
     *danger.get(&region_of(p)).unwrap_or(&0.0)
 }
 
+/// Predator-aware coordination (selfish-herd) parameters handed to the flee path:
+/// `cohesion` ∈ [0,1] (how heavily the anti-isolation pull weighs against fleeing)
+/// and the positions of the agent's visible allies (the local prey group). `None`
+/// ⇒ the faculty is off and the flee step is the plain straight-away-from-predator
+/// move (byte-identical to the incumbent).
+#[derive(Clone, Copy)]
+pub struct Herd<'a> {
+    pub cohesion: f32,
+    pub allies: &'a [Pos],
+}
+
 /// Build a fresh plan for `goal`. `rng` supplies exploration jitter; `danger`
 /// is the learned map of places to avoid.
 pub fn plan_for(
@@ -45,7 +56,7 @@ pub fn plan_for(
     rng: &mut Rng,
     tick: u64,
 ) -> Plan {
-    plan_for_with(goal, world, memory, danger, rng, tick, None, &[], 0.0)
+    plan_for_with(goal, world, memory, danger, rng, tick, None, &[], 0.0, None)
 }
 
 /// As [`plan_for`], but with an optional `forage_override` (a resource `(id, pos)`
@@ -64,12 +75,13 @@ pub fn plan_for_with(
     forage_override: Option<(EntityId, Pos)>,
     contention: &[(Pos, f32)],
     my_urgency: f32,
+    herd: Option<Herd>,
 ) -> Plan {
     let me = world.me();
     let pos = me.map(|m| m.pos).unwrap_or(Pos::new(0, 0));
 
     let steps: Vec<Action> = match &goal.kind {
-        GoalKind::Flee(threat) => flee_steps(*threat, world, danger, pos, rng),
+        GoalKind::Flee(threat) => flee_steps(*threat, world, danger, pos, rng, herd),
         // approach the threat and strike when adjacent — ignoring the learned
         // danger field (you can't confront a thing while avoiding it).
         GoalKind::Confront(threat) => match world.belief(*threat) {
@@ -144,17 +156,84 @@ pub fn plan_for_with(
     Plan::new(goal.clone(), steps, tick)
 }
 
-/// Move directly away from a threat for a few steps.
-fn flee_steps(threat: EntityId, world: &WorldModel, danger: &Danger, pos: Pos, rng: &mut Rng) -> Vec<Action> {
+/// Move to evade a threat for a few steps.
+///
+/// With `herd = None` (the faculty off) this is the incumbent behaviour: pick the
+/// direction that *increases* distance from the predator the most — flee straight
+/// away. Byte-identical to the original, drawing no RNG.
+///
+/// With `herd = Some(..)` (predator-aware coordination on) the step COMPOSES two
+/// terms — flee away from the predator AND pull toward the local prey group (the
+/// **selfish herd**, Hamilton 1971): each candidate direction is scored by the
+/// distance it gains from the predator *plus* a cohesion-weighted reduction in the
+/// agent's isolation (distance to the group centroid). Moving toward the group
+/// dilutes this agent's individual risk and, crucially, stops it being the lone
+/// straggler an isolated-target predator picks off — while never stepping *toward*
+/// the predator (the flee term dominates when the group lies past the threat).
+/// Fully deterministic — derived from the perceived predator + ally positions, no
+/// RNG draw — so the gate stays clean.
+fn flee_steps(
+    threat: EntityId,
+    world: &WorldModel,
+    danger: &Danger,
+    pos: Pos,
+    rng: &mut Rng,
+    herd: Option<Herd>,
+) -> Vec<Action> {
     let Some(b) = world.belief(threat) else {
         return wander(pos, world, danger, rng);
     };
     let tp = b.entity.pos;
-    // pick the direction that *increases* distance the most.
+
+    // INCUMBENT flee (faculty off, or no allies to herd toward): straight away.
+    let cohesion = match herd {
+        Some(h) if h.cohesion > 0.0 && !h.allies.is_empty() => h.cohesion,
+        _ => {
+            let best = Dir::ALL
+                .into_iter()
+                .max_by_key(|d| pos.step(*d).manhattan(tp))
+                .unwrap_or(Dir::North);
+            return vec![Action::Move(best); 3];
+        }
+    };
+    let allies = herd.expect("cohesion>0 implies herd present").allies;
+
+    // group centroid — the heart of the herd to pull toward (selfish-herd geometry).
+    let n = allies.len() as i32;
+    let cx = allies.iter().map(|p| p.x).sum::<i32>() / n;
+    let cy = allies.iter().map(|p| p.y).sum::<i32>() / n;
+    let centroid = Pos::new(cx, cy);
+    let nearest_ally = allies
+        .iter()
+        .min_by_key(|a| a.manhattan(pos))
+        .copied()
+        .unwrap_or(centroid);
+
+    // score each candidate step: gain distance from the predator, AND cut isolation
+    // (distance to the centroid / nearest ally). Cohesion sets the trade-off. We
+    // re-derive the same flee gain the incumbent maximises, then add the herd term.
+    let flee_gain = |np: Pos| (np.manhattan(tp) - pos.manhattan(tp)) as f32;
+    // isolation reduction: how much closer to the herd the step gets us (positive is
+    // good). Blend centroid (the geometry) with the nearest ally (the concrete
+    // neighbour to shelter beside).
+    let iso_gain = |np: Pos| {
+        let c = (centroid.manhattan(pos) - centroid.manhattan(np)) as f32;
+        let a = (nearest_ally.manhattan(pos) - nearest_ally.manhattan(np)) as f32;
+        0.6 * c + 0.4 * a
+    };
     let best = Dir::ALL
         .into_iter()
-        .max_by_key(|d| pos.step(*d).manhattan(tp))
+        .max_by(|&d1, &d2| {
+            let np1 = pos.step(d1);
+            let np2 = pos.step(d2);
+            // flee term anchors the score (you never walk into the predator); the
+            // herd term, scaled by cohesion, biases among the safe-ish directions.
+            let s1 = flee_gain(np1) + cohesion * iso_gain(np1) - danger_at(danger, np1) * 0.5;
+            let s2 = flee_gain(np2) + cohesion * iso_gain(np2) - danger_at(danger, np2) * 0.5;
+            s1.total_cmp(&s2)
+        })
         .unwrap_or(Dir::North);
+    let _ = rng; // herd path is deterministic; rng kept for signature parity.
     vec![Action::Move(best); 3]
 }
 
