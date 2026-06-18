@@ -73,6 +73,7 @@ fn main() {
     checks.push(ac45_grief_resolves());
     checks.push(ac46_winter_provisioning());
     checks.push(ac47_overlay_learns());
+    checks.push(ac48_herd_evasion());
 
     println!("\n╔════════════════════════════════════════════════════════════════════╗");
     println!("║  Daimon believability harness                                       ║");
@@ -1973,6 +1974,144 @@ fn ac47_overlay_learns() -> Check {
         pass,
         detail: format!(
             "nn_enabled ablation (harsh, 600 ticks): ON {on_enabled}/6 overlays, Σ|w| {on_init:.2}→{on_fin:.2} (moved in-life, finite) · OFF control {off_enabled}/6, Σ|w| {off_init:.2}→{off_fin:.2} (inert, instinct byte-identical). Learning is real; overlay claims no fitness win (see overlay_ab)"
+        ),
+    }
+}
+
+/// AC48 — PREDATOR-AWARE COORDINATION (selfish-herd / dispersal-evasion, Hamilton
+/// 1971). A threatened mind with the faculty ON composes its evasive step from two
+/// terms: flee the predator AND pull toward its local prey group, so it stops being
+/// the lone straggler an isolated-target predator targets. Controlled ablation: the
+/// SAME seeded threat geometry is shown to a mind with the faculty ON and to an OFF
+/// control (gene 28 the only difference). We read the chosen flee move's effect on
+/// the agent's *isolation* (Manhattan distance to the ally group's centroid).
+///
+/// Pass requires (a) ON reduces isolation strictly more than OFF (the faculty
+/// measurably herds), (b) OFF is byte-identical to the incumbent straight-away flee
+/// — the same move a `Genome::baseline()` mind makes (the ablation-safety guarantee),
+/// and (c) neither ever steps *toward* the predator (evasion is never sacrificed).
+fn ac48_herd_evasion() -> Check {
+    use daimon_core::{Action, Drive, GoalKind};
+    use daimon_mind::evolve::Genome;
+
+    // A threat scene: predator to the NORTH-WEST, the agent on the eastern flank, and
+    // an ally group clustered to the SOUTH. Straight flee runs east/away; the herd
+    // pull adds a southward bias toward the group's centroid — closing isolation
+    // WITHOUT ever stepping back toward the predator. Several geometries, summed.
+    // Predator sits at Manhattan distance ≤ reflex range (3) on ONE axis so the
+    // incumbent straight-flee runs unambiguously along the orthogonal axis; the ally
+    // group is placed on the *third* direction so the herd term adds a bias the
+    // straight-flee never has — yet still never steps back toward the predator.
+    let scenes: &[(Pos, Pos, [Pos; 3])] = &[
+        // (me, predator due-N, allies due-E) → straight-flee S; herd pulls E.
+        (Pos::new(20, 10), Pos::new(20, 7), [Pos::new(34, 11), Pos::new(36, 9), Pos::new(35, 10)]),
+        // (me, predator due-W, allies due-S) → straight-flee E (tie→N? see below); herd pulls S.
+        (Pos::new(12, 20), Pos::new(9, 20), [Pos::new(13, 34), Pos::new(11, 36), Pos::new(12, 35)]),
+        // (me, predator due-N, allies due-E) at a different origin.
+        (Pos::new(25, 28), Pos::new(25, 25), [Pos::new(40, 29), Pos::new(38, 27), Pos::new(39, 28)]),
+    ];
+
+    // Build a threatened mind from a genome, feed it ONE percept (predator close
+    // enough to be a perceived threat, allies visible), and return the flee move it
+    // chooses. `herd` = gene 28 (the only thing that differs between arms).
+    let chosen_move = |herd_on: bool, me: Pos, pred: Pos, allies: &[Pos; 3]| -> Option<Dir> {
+        let mut g = Genome::baseline();
+        g.g[20] = 0.0; // can_fight OFF — isolate the flee path (no confront branch)
+        g.g[28] = if herd_on { 1.0 } else { 0.0 }; // herd-evasion: the ONLY difference
+        let mut mind = g.express(&Persona::new("Herd"), 0xC0FFEE);
+        let mut visible: Vec<Entity> = allies
+            .iter()
+            .enumerate()
+            .map(|(i, p)| Entity {
+                id: EntityId(100 + i as u32),
+                kind: EntityKind::Agent,
+                pos: *p,
+                label: "kin".into(),
+            })
+            .collect();
+        visible.push(Entity {
+            id: EntityId(9),
+            kind: EntityKind::Predator,
+            pos: pred,
+            label: "stalker".into(),
+        });
+        let mut body = SelfState::new(me);
+        body.health = 0.9;
+        let percept = Percept { tick: 1, me: body, visible, events: vec![] };
+        let t = mind.cycle(&percept);
+        // it must be fleeing (survival reflex / decide), and the action a move.
+        if !matches!(t.goal, GoalKind::Flee(_)) {
+            return None;
+        }
+        let _ = Drive::Survival;
+        if let Action::Move(d) = t.action {
+            Some(d)
+        } else {
+            None
+        }
+    };
+
+    // isolation = distance to the ally centroid; the faculty should shrink it.
+    let centroid = |allies: &[Pos; 3]| {
+        Pos::new(
+            allies.iter().map(|p| p.x).sum::<i32>() / 3,
+            allies.iter().map(|p| p.y).sum::<i32>() / 3,
+        )
+    };
+
+    let (mut on_iso_gain, mut off_iso_gain) = (0i32, 0i32);
+    let (mut identical_off, mut scenes_ok) = (true, true);
+    let (mut on_toward_pred, mut off_toward_pred) = (0u32, 0u32);
+    let mut herded = 0u32; // scenes where ON beats OFF on isolation reduction
+    for (me, pred, allies) in scenes {
+        let c = centroid(allies);
+        let on = chosen_move(true, *me, *pred, allies);
+        let off = chosen_move(false, *me, *pred, allies);
+        let (Some(on_d), Some(off_d)) = (on, off) else {
+            scenes_ok = false;
+            continue;
+        };
+        let on_np = me.step(on_d);
+        let off_np = me.step(off_d);
+        // isolation reduction (positive = moved toward the group's heart)
+        let on_gain = me.manhattan(c) - on_np.manhattan(c);
+        let off_gain = me.manhattan(c) - off_np.manhattan(c);
+        on_iso_gain += on_gain;
+        off_iso_gain += off_gain;
+        if on_gain > off_gain {
+            herded += 1;
+        }
+        // OFF must reproduce the incumbent straight-away flee EXACTLY.
+        let incumbent = Dir::ALL
+            .into_iter()
+            .max_by_key(|d| me.step(*d).manhattan(*pred))
+            .unwrap();
+        if off_d != incumbent {
+            identical_off = false;
+        }
+        // neither arm may step toward the predator (closer than staying put).
+        if on_np.manhattan(*pred) < me.manhattan(*pred) {
+            on_toward_pred += 1;
+        }
+        if off_np.manhattan(*pred) < me.manhattan(*pred) {
+            off_toward_pred += 1;
+        }
+    }
+
+    let pass = scenes_ok
+        && herded == scenes.len() as u32
+        && on_iso_gain > off_iso_gain
+        && identical_off
+        && on_toward_pred == 0
+        && off_toward_pred == 0;
+    Check {
+        name: "AC48 herd-evasion",
+        pass,
+        detail: format!(
+            "gene-28 ablation ({} threat scenes): ON cuts isolation Σ={on_iso_gain} vs OFF Σ={off_iso_gain} (herded {herded}/{} scenes) · OFF == incumbent straight-flee: {} · stepped-toward-predator ON {on_toward_pred}/OFF {off_toward_pred} (must be 0)",
+            scenes.len(),
+            scenes.len(),
+            if identical_off { "byte-identical" } else { "DIVERGED" },
         ),
     }
 }
