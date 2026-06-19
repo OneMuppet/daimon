@@ -263,6 +263,11 @@ pub struct Mind {
     /// reward signal (Δ well-being). Transient learning bookkeeping.
     #[serde(default)]
     prev_wellbeing: f32,
+    /// Reused scratch for the per-tick associative-memory concept-id list. Cleared
+    /// and refilled each tick (never freshly allocated in steady state) so the
+    /// cognitive cycle holds toward a zero-allocation hot path. Not persisted.
+    #[serde(skip)]
+    concept_scratch: Vec<u32>,
     cfg: MindConfig,
     last_deliberation: Option<u64>,
     metrics: Metrics,
@@ -364,6 +369,7 @@ impl Mind {
             grieving_for: None,
             overlay: Overlay::disabled(),
             prev_wellbeing: 0.0,
+            concept_scratch: Vec::new(),
             cfg,
             last_deliberation: None,
             metrics: Metrics::default(),
@@ -842,7 +848,10 @@ impl Mind {
         }
         // associative memory: everything seen together this tick gets linked, so
         // the agent later associates (say) the stalker with the place it haunts.
-        let mut concepts: Vec<u32> = Vec::with_capacity(p.visible.len() * 2);
+        // Reuse the held scratch buffer (take it out to satisfy the borrow checker,
+        // refill, restore) so steady-state ticks allocate nothing here.
+        let mut concepts = std::mem::take(&mut self.concept_scratch);
+        concepts.clear();
         for e in &p.visible {
             concepts.push(e.id.0);
             concepts.push(kind_concept(e.kind));
@@ -850,6 +859,7 @@ impl Mind {
         if concepts.len() >= 2 {
             self.memory.associate(&concepts, p.tick);
         }
+        self.concept_scratch = concepts;
     }
 
     /// Update the drive system from interoception and the world, and return a
@@ -2025,36 +2035,45 @@ impl Mind {
     /// Compose this tick's inner-monologue line from concrete current state,
     /// via the procedural narrator (varied + situational, not templated).
     fn narrate(&mut self, goal: &Goal, process: Process, surprise: f32) -> String {
-        let name = self.persona.name.clone();
         // a self-invented goal gets its own voice — the agent naming a thing it
         // figured out for itself.
         if self.invented_now {
             if let Some(mc) = self.praxis.mending_concept() {
                 let c = &self.praxis.concepts[mc];
-                return format!("[{name}] I worked it out — {} ({}). I'm going to it.", c.name, c.epithet());
+                return format!(
+                    "[{}] I worked it out — {} ({}). I'm going to it.",
+                    self.persona.name, c.name, c.epithet()
+                );
             }
         }
         let (target, coord, other) = self.phrase_target(&goal.kind);
+        // Take the RNG out so the phrasing can borrow other `&self` fields (name,
+        // a recalled fact) by reference instead of cloning — the draw order is
+        // preserved exactly (decision_line advances the real RNG, then it's stored
+        // back), so this is byte-identical while allocating two fewer strings/tick.
+        let mut rng = std::mem::replace(&mut self.rng, Rng::new(0));
         // a short recalled fact to lean on, if any
         let memory = self
             .memory
             .facts()
             .filter(|(k, _)| k.starts_with("place:") || k.starts_with("danger:") || k.starts_with("insight:"))
-            .map(|(_, f)| f.statement.clone())
+            .map(|(_, f)| f.statement.as_str())
             .next();
         let ph = crate::language::Phrasing {
-            name: &name,
+            name: &self.persona.name,
             goal: &goal.kind,
             process,
             drive: goal.origin,
             surprise,
             target: target.as_deref(),
             coord,
-            memory: memory.as_deref(),
+            memory,
             other: other.as_deref(),
             holding: self.held,
         };
-        crate::language::decision_line(&mut self.rng, &ph)
+        let line = crate::language::decision_line(&mut rng, &ph);
+        self.rng = rng;
+        line
     }
 
     /// Where a goal's target sits (for imagination/path-planning). Flee is
