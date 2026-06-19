@@ -42,6 +42,4 @@ pub struct Thought {
     pub goal: GoalKind,
     /// The chosen action this tick.
     pub action: Action,
-    /// First-person narration — the line a player would see.
-    pub inner: String,
 }

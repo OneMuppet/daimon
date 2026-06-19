@@ -153,8 +153,8 @@ fn main() {
             if field.bodies[&id.0].health <= 0.0 {
                 continue; // this one has died
             }
-            let thought = step(agent, &mut field);
-            last_inner.insert(id.0, thought.inner.clone());
+            step(agent, &mut field);
+            last_inner.insert(id.0, agent.inner().to_string());
 
             let pos = field.bodies[&id.0].pos;
             // a predator on top of you hurts — a world-driven event the mind must hear

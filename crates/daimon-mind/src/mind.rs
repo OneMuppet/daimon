@@ -39,6 +39,7 @@ use daimon_core::{
     Plan, Pos, Rng, WorldEvent, WorldModel,
 };
 use serde::{Deserialize, Serialize};
+use std::fmt::Write;
 
 /// Tunables for the escalation policy and housekeeping cadence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,6 +269,17 @@ pub struct Mind {
     /// cognitive cycle holds toward a zero-allocation hot path. Not persisted.
     #[serde(skip)]
     concept_scratch: Vec<u32>,
+    /// Reused buffers for narration so the cognitive cycle holds toward a
+    /// zero-allocation hot path: `inner_buf` is the composed monologue line,
+    /// `target_buf`/`other_buf` hold the resolved target/other labels the phrasing
+    /// borrows. Cleared and refilled each tick, never freshly allocated in steady
+    /// state. Not persisted.
+    #[serde(skip)]
+    inner_buf: String,
+    #[serde(skip)]
+    target_buf: String,
+    #[serde(skip)]
+    other_buf: String,
     cfg: MindConfig,
     last_deliberation: Option<u64>,
     metrics: Metrics,
@@ -370,6 +382,9 @@ impl Mind {
             overlay: Overlay::disabled(),
             prev_wellbeing: 0.0,
             concept_scratch: Vec::new(),
+            inner_buf: String::with_capacity(160),
+            target_buf: String::with_capacity(32),
+            other_buf: String::with_capacity(32),
             cfg,
             last_deliberation: None,
             metrics: Metrics::default(),
@@ -807,14 +822,15 @@ impl Mind {
         }
 
         let _ = rationale;
-        let inner = self.narrate(&goal, process, surprise);
+        // compute narration every tick (RNG consumed identically) into the reused
+        // buffer; read it back via `Mind::inner()`.
+        self.narrate(&goal, process, surprise);
         Thought {
             tick: p.tick,
             process,
             dominant_drive: self.drives.dominant().0,
             goal: goal.kind,
             action,
-            inner,
         }
     }
 
@@ -1229,18 +1245,19 @@ impl Mind {
         ));
         let action = self.next_action();
         self.last_struck = matches!(action, Action::Strike(_));
-        let inner = if confront {
-            format!("[{}] I'm done running — I turn and face it.", self.persona.name)
+        // reflex narration writes into the reused buffer (no per-tick allocation).
+        self.inner_buf.clear();
+        if confront {
+            let _ = write!(self.inner_buf, "[{}] I'm done running — I turn and face it.", self.persona.name);
         } else {
-            format!("[{}] The predator is right there — no time to think, I run.", self.persona.name)
-        };
+            let _ = write!(self.inner_buf, "[{}] The predator is right there — no time to think, I run.", self.persona.name);
+        }
         Some(Thought {
             tick: p.tick,
             process: Process::Reflex,
             dominant_drive: Drive::Survival,
             goal: kind,
             action,
-            inner,
         })
     }
 
@@ -2034,23 +2051,29 @@ impl Mind {
 
     /// Compose this tick's inner-monologue line from concrete current state,
     /// via the procedural narrator (varied + situational, not templated).
-    fn narrate(&mut self, goal: &Goal, process: Process, surprise: f32) -> String {
+    fn narrate(&mut self, goal: &Goal, process: Process, surprise: f32) {
+        // compose into the reused buffer (zero steady-state allocation).
+        let mut buf = std::mem::take(&mut self.inner_buf);
+        buf.clear();
         // a self-invented goal gets its own voice — the agent naming a thing it
         // figured out for itself.
         if self.invented_now {
             if let Some(mc) = self.praxis.mending_concept() {
                 let c = &self.praxis.concepts[mc];
-                return format!(
+                let _ = write!(
+                    buf,
                     "[{}] I worked it out — {} ({}). I'm going to it.",
                     self.persona.name, c.name, c.epithet()
                 );
+                self.inner_buf = buf;
+                return;
             }
         }
-        let (target, coord, other) = self.phrase_target(&goal.kind);
+        let (has_target, coord, has_other) = self.phrase_target(&goal.kind);
         // Take the RNG out so the phrasing can borrow other `&self` fields (name,
         // a recalled fact) by reference instead of cloning — the draw order is
         // preserved exactly (decision_line advances the real RNG, then it's stored
-        // back), so this is byte-identical while allocating two fewer strings/tick.
+        // back), so this is byte-identical while allocating nothing per tick.
         let mut rng = std::mem::replace(&mut self.rng, Rng::new(0));
         // a short recalled fact to lean on, if any
         let memory = self
@@ -2065,15 +2088,20 @@ impl Mind {
             process,
             drive: goal.origin,
             surprise,
-            target: target.as_deref(),
+            target: has_target.then_some(self.target_buf.as_str()),
             coord,
             memory,
-            other: other.as_deref(),
+            other: has_other.then_some(self.other_buf.as_str()),
             holding: self.held,
         };
-        let line = crate::language::decision_line(&mut rng, &ph);
+        crate::language::decision_line(&mut rng, &ph, &mut buf);
         self.rng = rng;
-        line
+        self.inner_buf = buf;
+    }
+
+    /// This tick's first-person narration line (the reused buffer).
+    pub fn inner(&self) -> &str {
+        &self.inner_buf
     }
 
     /// Where a goal's target sits (for imagination/path-planning). Flee is
@@ -2153,46 +2181,70 @@ impl Mind {
     }
 
     /// Resolve the concrete thing a goal is about: its label, where it is, and a
-    /// related agent name — so narration can name real entities and places.
-    fn phrase_target(&self, kind: &GoalKind) -> (Option<String>, Option<(i32, i32)>, Option<String>) {
+    /// related agent name — so narration can name real entities and places. Labels
+    /// are written into the reused `target_buf`/`other_buf`; the returned flags say
+    /// whether each was filled (no per-tick allocation).
+    fn phrase_target(&mut self, kind: &GoalKind) -> (bool, Option<(i32, i32)>, bool) {
+        self.target_buf.clear();
+        self.other_buf.clear();
         let pos = self.world.me().map(|m| m.pos).unwrap_or(Pos::new(0, 0));
-        let from_belief = |id: daimon_core::EntityId| {
-            self.world
-                .belief(id)
-                .map(|b| (b.entity.label.clone(), (b.entity.pos.x, b.entity.pos.y)))
-        };
         match kind {
-            GoalKind::Forage => self
-                .world
-                .nearest_of(EntityKind::Food, pos)
-                .map(|b| (Some(b.entity.label.clone()), Some((b.entity.pos.x, b.entity.pos.y)), None))
-                .unwrap_or((None, Some((pos.x, pos.y)), None)),
-            GoalKind::Hydrate => self
-                .world
-                .nearest_of(EntityKind::Water, pos)
-                .map(|b| (Some(b.entity.label.clone()), Some((b.entity.pos.x, b.entity.pos.y)), None))
-                .unwrap_or((None, Some((pos.x, pos.y)), None)),
+            GoalKind::Forage => match self.world.nearest_of(EntityKind::Food, pos) {
+                Some(b) => {
+                    let c = (b.entity.pos.x, b.entity.pos.y);
+                    self.target_buf.push_str(&b.entity.label);
+                    (true, Some(c), false)
+                }
+                None => (false, Some((pos.x, pos.y)), false),
+            },
+            GoalKind::Hydrate => match self.world.nearest_of(EntityKind::Water, pos) {
+                Some(b) => {
+                    let c = (b.entity.pos.x, b.entity.pos.y);
+                    self.target_buf.push_str(&b.entity.label);
+                    (true, Some(c), false)
+                }
+                None => (false, Some((pos.x, pos.y)), false),
+            },
             GoalKind::Investigate(id) | GoalKind::Flee(id) | GoalKind::Confront(id) => {
-                let (l, c) = from_belief(*id).unzip();
-                (l, c, None)
+                match self.world.belief(*id) {
+                    Some(b) => {
+                        let c = (b.entity.pos.x, b.entity.pos.y);
+                        self.target_buf.push_str(&b.entity.label);
+                        (true, Some(c), false)
+                    }
+                    None => (false, None, false),
+                }
             }
             GoalKind::Socialize(id) => {
-                let name = self
-                    .social
-                    .model(*id)
-                    .map(|m| m.name.clone())
-                    .or_else(|| self.world.belief(*id).map(|b| b.entity.label.clone()));
                 let coord = self.world.belief(*id).map(|b| (b.entity.pos.x, b.entity.pos.y));
-                (name.clone(), coord, name)
+                // target and other are the same name here; only `other` is read by
+                // the social lead, so fill `other_buf` and leave target unset.
+                let has = if let Some(m) = self.social.model(*id) {
+                    self.other_buf.push_str(&m.name);
+                    true
+                } else if let Some(b) = self.world.belief(*id) {
+                    self.other_buf.push_str(&b.entity.label);
+                    true
+                } else {
+                    false
+                };
+                (false, coord, has)
             }
             GoalKind::Explore | GoalKind::Recover | GoalKind::Shelter | GoalKind::Provision => {
-                (None, Some((pos.x, pos.y)), None)
+                (false, Some((pos.x, pos.y)), false)
             }
             // mourning names the dead friend (the continuing bond), so the narration
             // can reminisce about them by name.
             GoalKind::Mourn => {
-                let who = self.grieving_for.and_then(|id| self.social.model(id)).map(|m| m.name.clone());
-                (who.clone(), Some((pos.x, pos.y)), who)
+                // the mourn lead reads `other` first (`p.other.or(p.target)`), so
+                // filling `other_buf` is sufficient and matches the prior text.
+                let has = if let Some(m) = self.grieving_for.and_then(|id| self.social.model(id)) {
+                    self.other_buf.push_str(&m.name);
+                    true
+                } else {
+                    false
+                };
+                (false, Some((pos.x, pos.y)), has)
             }
         }
     }

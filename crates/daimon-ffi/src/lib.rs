@@ -327,7 +327,7 @@ fn process_str(p: Process) -> &'static str {
     }
 }
 
-fn flatten_thought(t: &Thought) -> FfiThought {
+fn flatten_thought(t: &Thought, inner: &str) -> FfiThought {
     let mut out = FfiThought {
         action: t.action.verb(),
         dir: None,
@@ -337,7 +337,7 @@ fn flatten_thought(t: &Thought) -> FfiThought {
         goal: t.goal.label(),
         drive: t.dominant_drive.name(),
         process: process_str(t.process),
-        inner: t.inner.clone(),
+        inner: inner.to_string(),
     };
     match &t.action {
         Action::Move(d) => out.dir = Some(dir_to_str(*d)),
@@ -429,7 +429,10 @@ pub unsafe extern "C" fn daimon_agent_think(agent: *mut Agent, input_json: *cons
         }
         let visible: Vec<Entity> = p.visible.into_iter().filter_map(FfiEntity::into_entity).collect();
         let thought = agent.think(p.body.into_self_state(), visible);
-        match serde_json::to_string(&flatten_thought(&thought)) {
+        // source `inner` from the agent (off the owned Thought) — wire format
+        // unchanged; the flat JSON still emits the `"inner"` field.
+        let flat = flatten_thought(&thought, agent.inner());
+        match serde_json::to_string(&flat) {
             Ok(s) => into_c(s),
             Err(e) => {
                 set_err(format!("could not serialise decision: {e}"));

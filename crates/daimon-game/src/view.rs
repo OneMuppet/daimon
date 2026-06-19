@@ -827,7 +827,7 @@ fn inspector(s: &mut Scene, world: &GameWorld, selected: Option<usize>, sw: f32,
                 Process::Deliberate => 0x9b6bff,
                 Process::Routine => 0x7fb0ff,
             };
-            (t.process.tag(), c, t.inner.clone())
+            (t.process.tag(), c, a.inner.clone())
         }
         None => ("…", MUTED, "waking up".into()),
     };

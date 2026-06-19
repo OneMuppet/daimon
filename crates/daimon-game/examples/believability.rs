@@ -102,7 +102,7 @@ fn ac1_situational_language() -> Check {
         for a in &world.agents {
             if let Some(t) = &a.last {
                 if t.process == Process::Deliberate {
-                    lines.push(t.inner.clone());
+                    lines.push(a.inner.clone());
                 }
             }
         }

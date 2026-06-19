@@ -42,7 +42,7 @@ fn run_digest(seed: u64) -> u64 {
         t.action.verb().hash(&mut h);
         t.goal.label().hash(&mut h);
         t.dominant_drive.name().hash(&mut h);
-        t.inner.hash(&mut h);
+        mind.inner().hash(&mut h);
     }
     h.finish()
 }

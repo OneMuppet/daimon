@@ -156,8 +156,8 @@ fn main() {
             // surface deliberations and reflexes always; sample routine beats.
             let interesting = thought.process != Process::Routine || thought.tick.is_multiple_of(7);
             if interesting {
-                let line = format!("t{:>4} {} {}", thought.tick, tag, thought.inner);
-                let key = format!("{tag} {}", thought.inner);
+                let line = format!("t{:>4} {} {}", thought.tick, tag, mind.inner());
+                let key = format!("{tag} {}", mind.inner());
                 match pending.as_mut() {
                     Some((_, k, n)) if *k == key => *n += 1,
                     _ => {

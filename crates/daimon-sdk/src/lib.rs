@@ -55,7 +55,7 @@
 //! }
 //!
 //! // Optional, but cheap and lovely: surface the inner monologue.
-//! println!("{}: {}", agent.name(), thought.inner);
+//! println!("{}: {}", agent.name(), agent.inner());
 //! ```
 //!
 //! ## Driver loop (let the SDK orchestrate)
@@ -126,6 +126,13 @@ impl Agent {
     /// The character's name (from its persona).
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// This tick's first-person narration line — the line a player would see,
+    /// composed during the last [`think`](Agent::think). Borrowed from a reused
+    /// buffer (no per-tick allocation), so copy it if you need to keep it.
+    pub fn inner(&self) -> &str {
+        self.mind.inner()
     }
 
     /// Tell the mind something that happened to it this tick that did **not**

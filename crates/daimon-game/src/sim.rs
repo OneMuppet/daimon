@@ -24,6 +24,10 @@ pub struct Agent {
     pub rx: f32,
     pub ry: f32,
     pub last: Option<Thought>,
+    /// This agent's latest narration line, copied off the mind's reused buffer at
+    /// think time (the buffer itself is overwritten each tick, so the renderer
+    /// keeps its own owned copy for the inspector panel).
+    pub inner: String,
     /// A short history of render positions for a glowing motion trail.
     pub trail: Vec<(f32, f32)>,
     /// Decays each frame; spikes when a reflex or deliberation fires.
@@ -535,6 +539,7 @@ impl GameWorld {
                 rx: pos.x as f32,
                 ry: pos.y as f32,
                 last: None,
+                inner: String::new(),
                 trail: Vec::new(),
                 flash: 0.0,
                 flash_kind: Process::Routine,
@@ -1071,6 +1076,12 @@ impl GameWorld {
             let percept = Percept { tick: self.tick, me, visible, events };
 
             let thought = self.agents[i].mind.cycle(&percept);
+            // keep an owned copy of this tick's narration off the reused buffer.
+            {
+                let a = &mut self.agents[i];
+                a.inner.clear();
+                a.inner.push_str(a.mind.inner());
+            }
 
             // flash on the expensive / instinctive paths
             match thought.process {

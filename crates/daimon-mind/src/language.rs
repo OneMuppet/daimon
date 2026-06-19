@@ -11,6 +11,7 @@
 
 use crate::thought::Process;
 use daimon_core::{Drive, GoalKind, Rng};
+use std::fmt::Write;
 
 /// Everything concrete the narrator can weave in.
 pub struct Phrasing<'a> {
@@ -35,39 +36,49 @@ fn pick<'a>(rng: &mut Rng, opts: &[&'a str]) -> &'a str {
     opts[rng.below(opts.len())]
 }
 
-/// Compose one inner-monologue line.
-pub fn decision_line(rng: &mut Rng, p: &Phrasing) -> String {
-    let lead = lead_clause(rng, p);
-    let mut s = format!("[{}] ", p.name);
+/// Write a coordinate as `(x,y)` into `out`.
+fn write_coord(out: &mut String, x: i32, y: i32) {
+    let _ = write!(out, "({x},{y})");
+}
+
+/// Compose one inner-monologue line, writing into `out` (no per-call allocation).
+pub fn decision_line(rng: &mut Rng, p: &Phrasing, out: &mut String) {
+    let _ = write!(out, "[{}] ", p.name);
 
     if p.process == Process::Reflex {
         // instinct: terse, no deliberation
-        s.push_str(pick(rng, &[
+        out.push_str(pick(rng, &[
             "no time to think — I run.",
             "move, now.",
             "instinct takes over — go.",
             "every nerve says flee.",
         ]));
-        return s;
+        return;
     }
 
+    // The lead clause draws its RNG *first* (preserving the original order, where
+    // `lead_clause` was evaluated before the holding/deliberate prefix), then the
+    // prefix is drawn and spliced in ahead of the lead — so the bytes read
+    // `[name] <prefix><lead>` while the draw order stays byte-identical.
+    let prefix_at = out.len();
+    lead_clause(rng, p, out);
     if p.holding {
-        s.push_str(pick(rng, &[
+        let prefix = pick(rng, &[
             "still on it: ",
             "seeing it through: ",
             "no, I started this — ",
             "staying with it. ",
-        ]));
+        ]);
+        out.insert_str(prefix_at, prefix);
     } else if p.process == Process::Deliberate {
-        s.push_str(pick(rng, &["(weighing it) ", "let me think — ", "alright: ", ""]));
+        let prefix = pick(rng, &["(weighing it) ", "let me think — ", "alright: ", ""]);
+        out.insert_str(prefix_at, prefix);
     }
-
-    s.push_str(&lead);
 
     // optional grounding clause
     if p.surprise > 0.5 {
-        s.push(' ');
-        s.push_str(pick(rng, &[
+        out.push(' ');
+        out.push_str(pick(rng, &[
             "— that caught me off guard.",
             "— didn't see that coming.",
             "— still rattled.",
@@ -75,116 +86,163 @@ pub fn decision_line(rng: &mut Rng, p: &Phrasing) -> String {
         ]));
     } else if let Some(mem) = p.memory {
         if rng.chance(0.5) {
-            s.push(' ');
-            s.push_str(&format!(
-                "{} {mem}.",
-                pick(rng, &["I remember", "last I knew,", "going on what I recall:"])
-            ));
+            out.push(' ');
+            out.push_str(pick(rng, &["I remember", "last I knew,", "going on what I recall:"]));
+            let _ = write!(out, " {mem}.");
         }
     }
     // grounding net: a thought should name something concrete. If nothing
     // numeric slipped in and we know where we're headed, say where.
     if let Some((x, y)) = p.coord {
-        if !s.chars().any(|c| c.is_ascii_digit()) {
-            s.push_str(&format!(" (near ({x},{y}))"));
+        if !out.chars().any(|c| c.is_ascii_digit()) {
+            let _ = write!(out, " (near ({x},{y}))");
         }
     }
-    s
 }
 
-fn lead_clause(rng: &mut Rng, p: &Phrasing) -> String {
+fn lead_clause(rng: &mut Rng, p: &Phrasing, out: &mut String) {
     let tgt = p.target.unwrap_or("it");
-    let coord = p
-        .coord
-        .map(|(x, y)| format!("({x},{y})"))
-        .unwrap_or_default();
     match p.goal {
         GoalKind::Forage => {
-            let urge = pick(rng, &["I'm hungry", "my stomach's insisting", "hunger's gnawing", "I could eat"]);
-            let act = if p.target.is_some() {
-                format!("the {tgt} at {coord} will do", )
+            out.push_str(pick(rng, &["I'm hungry", "my stomach's insisting", "hunger's gnawing", "I could eat"]));
+            out.push_str(" — ");
+            if p.target.is_some() {
+                let _ = write!(out, "the {tgt} at ");
+                if let Some((x, y)) = p.coord {
+                    write_coord(out, x, y);
+                }
+                out.push_str(" will do");
             } else {
-                pick(rng, &["time to find food", "I'll forage", "something to eat, somewhere"]).into()
-            };
-            format!("{urge} — {act}.")
+                out.push_str(pick(rng, &["time to find food", "I'll forage", "something to eat, somewhere"]));
+            }
+            out.push('.');
         }
         GoalKind::Hydrate => {
-            let urge = pick(rng, &["throat's dry", "I'm parched", "thirst is winning", "need water"]);
-            let act = if p.target.is_some() {
-                format!("heading to the {tgt} at {coord}")
+            out.push_str(pick(rng, &["throat's dry", "I'm parched", "thirst is winning", "need water"]));
+            out.push_str(" — ");
+            if p.target.is_some() {
+                let _ = write!(out, "heading to the {tgt} at ");
+                if let Some((x, y)) = p.coord {
+                    write_coord(out, x, y);
+                }
             } else {
-                pick(rng, &["I'll find a spring", "water, wherever it is", "off to drink"]).into()
-            };
-            format!("{urge} — {act}.")
+                out.push_str(pick(rng, &["I'll find a spring", "water, wherever it is", "off to drink"]));
+            }
+            out.push('.');
         }
-        GoalKind::Flee(_) => format!(
-            "{} — {}.",
-            pick(rng, &["the stalker's close", "that predator again", "not worth the risk", "danger"]),
-            pick(rng, &["I'm putting distance between us", "backing away fast", "I'm gone", "anywhere but here"])
-        ),
-        GoalKind::Confront(_) => format!(
-            "{} — {}.",
-            pick(rng, &["enough running", "it keeps coming", "I won't be prey", "stand my ground"]),
-            pick(rng, &["I face the stalker", "I move on it", "let's see who flinches", "together we can turn it"])
-        ),
-        GoalKind::Investigate(_) => pick(rng, &[
-            &format!("that {tgt} keeps pulling at me — closer look"),
-            &format!("I still don't understand the {tgt}"),
-            &format!("what *is* the {tgt}? I have to know"),
-            &format!("the {tgt} at {coord} deserves study"),
-        ])
-        .to_string(),
+        GoalKind::Flee(_) => {
+            out.push_str(pick(rng, &["the stalker's close", "that predator again", "not worth the risk", "danger"]));
+            out.push_str(" — ");
+            out.push_str(pick(rng, &["I'm putting distance between us", "backing away fast", "I'm gone", "anywhere but here"]));
+            out.push('.');
+        }
+        GoalKind::Confront(_) => {
+            out.push_str(pick(rng, &["enough running", "it keeps coming", "I won't be prey", "stand my ground"]));
+            out.push_str(" — ");
+            out.push_str(pick(rng, &["I face the stalker", "I move on it", "let's see who flinches", "together we can turn it"]));
+            out.push('.');
+        }
+        GoalKind::Investigate(_) => match rng.below(4) {
+            0 => {
+                let _ = write!(out, "that {tgt} keeps pulling at me — closer look");
+            }
+            1 => {
+                let _ = write!(out, "I still don't understand the {tgt}");
+            }
+            2 => {
+                let _ = write!(out, "what *is* the {tgt}? I have to know");
+            }
+            _ => {
+                let _ = write!(out, "the {tgt} at ");
+                if let Some((x, y)) = p.coord {
+                    write_coord(out, x, y);
+                }
+                out.push_str(" deserves study");
+            }
+        },
         GoalKind::Socialize(_) => {
             let who = p.other.unwrap_or("them");
-            pick(rng, &[
-                &format!("{who}'s nearby — I'd like to talk"),
-                &format!("good, {who}; I trust them"),
-                &format!("maybe {who} knows something I don't"),
-                &format!("I don't want to be alone — {who} it is"),
-            ])
-            .to_string()
+            match rng.below(4) {
+                0 => {
+                    let _ = write!(out, "{who}'s nearby — I'd like to talk");
+                }
+                1 => {
+                    let _ = write!(out, "good, {who}; I trust them");
+                }
+                2 => {
+                    let _ = write!(out, "maybe {who} knows something I don't");
+                }
+                _ => {
+                    let _ = write!(out, "I don't want to be alone — {who} it is");
+                }
+            }
         }
-        GoalKind::Explore => pick(rng, &[
-            "there's ground I haven't seen",
-            "the map's got blanks",
-            &format!("what's past {coord}?"),
-            "restless — let's wander",
-        ])
-        .to_string(),
-        GoalKind::Recover => pick(rng, &[
-            "I'm spent — resting while it's safe",
-            "need to catch my breath",
-            "a moment to recover",
-            &format!("safe enough at {coord} to rest"),
-        ])
-        .to_string(),
-        GoalKind::Shelter => pick(rng, &[
-            "too exposed out here — I'll wall myself in",
-            "I want walls around me, not open ground",
-            "closing the gap; I'll feel safer enclosed",
-            &format!("building up the sides here at {coord}"),
-        ])
-        .to_string(),
+        GoalKind::Explore => match rng.below(4) {
+            0 => out.push_str("there's ground I haven't seen"),
+            1 => out.push_str("the map's got blanks"),
+            2 => {
+                out.push_str("what's past ");
+                if let Some((x, y)) = p.coord {
+                    write_coord(out, x, y);
+                }
+                out.push('?');
+            }
+            _ => out.push_str("restless — let's wander"),
+        },
+        GoalKind::Recover => match rng.below(4) {
+            0 => out.push_str("I'm spent — resting while it's safe"),
+            1 => out.push_str("need to catch my breath"),
+            2 => out.push_str("a moment to recover"),
+            _ => {
+                out.push_str("safe enough at ");
+                if let Some((x, y)) = p.coord {
+                    write_coord(out, x, y);
+                }
+                out.push_str(" to rest");
+            }
+        },
+        GoalKind::Shelter => match rng.below(4) {
+            0 => out.push_str("too exposed out here — I'll wall myself in"),
+            1 => out.push_str("I want walls around me, not open ground"),
+            2 => out.push_str("closing the gap; I'll feel safer enclosed"),
+            _ => {
+                out.push_str("building up the sides here at ");
+                if let Some((x, y)) = p.coord {
+                    write_coord(out, x, y);
+                }
+            }
+        },
         GoalKind::Mourn => {
             // reminisce about the named dead friend (the continuing bond made audible).
             let who = p.other.or(p.target).unwrap_or("them");
-            pick(rng, &[
-                &format!("I keep seeing {who}. I can't just carry on"),
-                &format!("{who} is gone — I need a moment with it"),
-                &format!("the others move on; I'm still back there with {who}"),
-                &format!("I sit a while. {who} would have liked it quiet here"),
-                "the grief is heavy — I withdraw into it for now",
-            ])
-            .to_string()
+            match rng.below(5) {
+                0 => {
+                    let _ = write!(out, "I keep seeing {who}. I can't just carry on");
+                }
+                1 => {
+                    let _ = write!(out, "{who} is gone — I need a moment with it");
+                }
+                2 => {
+                    let _ = write!(out, "the others move on; I'm still back there with {who}");
+                }
+                3 => {
+                    let _ = write!(out, "I sit a while. {who} would have liked it quiet here");
+                }
+                _ => out.push_str("the grief is heavy — I withdraw into it for now"),
+            }
         }
-        GoalKind::Provision => pick(rng, &[
-            "winter is coming — better store some while there's plenty",
-            "the season won't last; I'm laying provisions by",
-            "gathering a surplus for the cold — the granary needs filling",
-            &format!("hauling stores to the cache near {coord}"),
-            "stock now, eat later — that's how you last the winter",
-        ])
-        .to_string(),
+        GoalKind::Provision => match rng.below(5) {
+            0 => out.push_str("winter is coming — better store some while there's plenty"),
+            1 => out.push_str("the season won't last; I'm laying provisions by"),
+            2 => out.push_str("gathering a surplus for the cold — the granary needs filling"),
+            3 => {
+                out.push_str("hauling stores to the cache near ");
+                if let Some((x, y)) = p.coord {
+                    write_coord(out, x, y);
+                }
+            }
+            _ => out.push_str("stock now, eat later — that's how you last the winter"),
+        },
     }
 }
 
@@ -212,7 +270,8 @@ mod tests {
                 other: None,
                 holding: false,
             };
-            let line = decision_line(&mut rng, &p);
+            let mut line = String::new();
+            decision_line(&mut rng, &p, &mut line);
             if line.contains("humming stone") || line.contains("(12,7)") || line.contains("water") {
                 grounded += 1;
             }
