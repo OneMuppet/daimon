@@ -26,7 +26,7 @@ use crate::anticipation::Anticipation;
 use crate::learn::LearningProgress;
 use crate::deliberate::{Deliberator, DeliberationContext, HeuristicDeliberator};
 use crate::persona::Persona;
-use crate::planner::{plan_for_with, region_of, Danger, Herd};
+use crate::planner::{fill_plan_steps, region_of, Danger, Herd};
 use crate::imagine::ForwardModel;
 use crate::overlay::{Overlay, N_IN};
 use crate::praxis::Praxis;
@@ -280,13 +280,18 @@ pub struct Mind {
     target_buf: String,
     #[serde(skip)]
     other_buf: String,
+    /// Reused scratch for (re)planning: the planner fills this with the next plan's
+    /// steps, which then refill the existing plan's deque in place — so a steady-state
+    /// re-plan allocates nothing. Cleared each (re)plan. Not persisted.
+    #[serde(skip)]
+    plan_steps_buf: Vec<Action>,
     cfg: MindConfig,
     last_deliberation: Option<u64>,
     metrics: Metrics,
 }
 
 fn default_deliberator() -> Option<Box<dyn Deliberator>> {
-    Some(Box::new(HeuristicDeliberator))
+    Some(Box::new(HeuristicDeliberator::default()))
 }
 
 /// How much stronger a rival drive must be, in pressure units, before the agent
@@ -314,7 +319,7 @@ const GRIEF_RESOLVED_BELOW: f32 = 0.08;
 impl Mind {
     /// A Daimon with the default offline deliberator and config.
     pub fn new(persona: Persona, seed: u64) -> Self {
-        Self::with(persona, seed, Box::new(HeuristicDeliberator), MindConfig::default())
+        Self::with(persona, seed, Box::new(HeuristicDeliberator::default()), MindConfig::default())
     }
 
     /// A Daimon with a custom System-2 (e.g. an LLM-backed deliberator) and
@@ -385,6 +390,7 @@ impl Mind {
             inner_buf: String::with_capacity(160),
             target_buf: String::with_capacity(32),
             other_buf: String::with_capacity(32),
+            plan_steps_buf: Vec::with_capacity(8),
             cfg,
             last_deliberation: None,
             metrics: Metrics::default(),
@@ -802,7 +808,7 @@ impl Mind {
         }
 
         // 4) DECIDE — fast arbitration, or escalate to the slow deliberator.
-        let (goal, process, rationale) = self.decide(surprise);
+        let (goal, process) = self.decide(surprise);
 
         // 5) PLAN — (re)build a short plan if the current one is unfit.
         self.ensure_plan(&goal);
@@ -821,7 +827,6 @@ impl Mind {
             self.reflect();
         }
 
-        let _ = rationale;
         // compute narration every tick (RNG consumed identically) into the reused
         // buffer; read it back via `Mind::inner()`.
         self.narrate(&goal, process, surprise);
@@ -1230,19 +1235,22 @@ impl Mind {
         } else {
             None
         };
-        // a reflex re-plans immediately and unconditionally.
-        self.plan = Some(plan_for_with(
+        // a reflex re-plans immediately and unconditionally, into the reused buffer.
+        let mut steps = std::mem::take(&mut self.plan_steps_buf);
+        fill_plan_steps(
+            &mut steps,
             &goal,
             &self.world,
             &self.memory,
             &self.danger,
             &mut self.rng,
-            p.tick,
             None,
             &[],
             0.0,
             herd,
-        ));
+        );
+        self.set_plan(&goal, &mut steps, p.tick);
+        self.plan_steps_buf = steps;
         let action = self.next_action();
         self.last_struck = matches!(action, Action::Strike(_));
         // reflex narration writes into the reused buffer (no per-tick allocation).
@@ -1263,7 +1271,7 @@ impl Mind {
 
     // ----- step 4: decide --------------------------------------------------
 
-    fn decide(&mut self, surprise: f32) -> (Goal, Process, String) {
+    fn decide(&mut self, surprise: f32) -> (Goal, Process) {
         self.invented_now = false;
         // FRONTIER: a self-invented goal from a learned affordance overrides the
         // built-in drives. Nothing coded this — the agent learned the thing helps
@@ -1273,7 +1281,7 @@ impl Mind {
             self.metrics.praxis_invented += 1;
             self.committed = Some(goal.clone());
             self.held = false;
-            return (goal, Process::Routine, String::new());
+            return (goal, Process::Routine);
         }
 
         // QUANTUM COGNITION: when enabled, the agent decides by collapsing a
@@ -1284,12 +1292,10 @@ impl Mind {
             order.sort_by(|a, b| self.drives.pressure(*b).total_cmp(&self.drives.pressure(*a)));
             let d = self.quantum_choice(&order[..order.len().min(3)]);
             let kind = self.fast_goal(d);
-            let reason = self.fast_reason(d, &kind);
             let pressure = self.drives.pressure(d);
             return self.apply_commitment(
                 Goal { kind, origin: d, priority: pressure },
                 Process::Routine,
-                reason,
                 pressure,
             );
         }
@@ -1311,12 +1317,10 @@ impl Mind {
                 let inclination = self.confront_value + 0.3 * self.persona.boldness;
                 if inclination > 0.6 || self.rng.chance(0.06 + 0.12 * self.persona.boldness) {
                     let kind = GoalKind::Confront(tid);
-                    let reason = self.fast_reason(Drive::Survival, &kind);
                     let pr = dom_pressure.max(0.9);
                     return self.apply_commitment(
                         Goal { kind, origin: Drive::Survival, priority: pr },
                         Process::Routine,
-                        reason,
                         pr,
                     );
                 }
@@ -1349,14 +1353,11 @@ impl Mind {
                 let dread = self.cfg.can_die && self.mortality > 0.5;
                 if needs_ok && exposed && (threat_near || recently_hurt || dread) {
                     let kind = GoalKind::Shelter;
-                    let reason =
-                        "I'm out in the open and it's not safe — I'll wall myself in".to_string();
                     // urgent enough to hold against routine pulls, below a true crisis.
                     let pr = dom_pressure.clamp(0.6, 0.95);
                     return self.apply_commitment(
                         Goal { kind, origin: Drive::Survival, priority: pr },
                         Process::Routine,
-                        reason,
                         pr,
                     );
                 }
@@ -1378,13 +1379,10 @@ impl Mind {
                     if friend.disposition > 0.0 && self.rng.chance(0.35 + 0.4 * self.mortality) {
                         let fid = friend.id;
                         let kind = GoalKind::Socialize(fid);
-                        let reason =
-                            "I can feel my own end out here — I don't want to face it alone".to_string();
                         let pr = (0.55 + 0.3 * self.mortality).clamp(0.55, 0.9);
                         return self.apply_commitment(
                             Goal { kind, origin: Drive::Social, priority: pr },
                             Process::Routine,
-                            reason,
                             pr,
                         );
                     }
@@ -1417,12 +1415,10 @@ impl Mind {
             let mourn_share = (0.2 + 0.5 * self.grief).clamp(0.0, 0.7);
             if needs_ok && self.rng.chance(mourn_share) {
                 let kind = GoalKind::Mourn;
-                let reason = "the grief pulls me inward — I can't move on just yet".to_string();
                 let pr = (0.5 + 0.4 * self.grief).clamp(0.5, 0.9);
                 return self.apply_commitment(
                     Goal { kind, origin: Drive::Social, priority: pr },
                     Process::Routine,
-                    reason,
                     pr,
                 );
             }
@@ -1473,20 +1469,12 @@ impl Mind {
                 let work = stocking || coming_home;
                 if needs_ok && (harvest || winter_soon || winter || coming_home) && work {
                     let kind = GoalKind::Provision;
-                    let reason = if winter {
-                        "the cold is here — back to the hearth and the stores we laid by".to_string()
-                    } else if winter_soon {
-                        "winter is coming — I should put stores by while I can".to_string()
-                    } else {
-                        "it's the season of plenty — time to stock up for the lean months".to_string()
-                    };
                     // a Mastery-strength pull: firm enough to hold against routine
                     // exploration, well below any survival/forage crisis.
                     let pr = (0.45 + 0.25 * self.persona.curiosity).clamp(0.45, 0.7);
                     return self.apply_commitment(
                         Goal { kind, origin: Drive::Mastery, priority: pr },
                         Process::Routine,
-                        reason,
                         pr,
                     );
                 }
@@ -1495,7 +1483,7 @@ impl Mind {
 
         // form a *proposal* — the goal this tick's appraisal favours, via the
         // fast path or, when warranted, the slow deliberator.
-        let (proposal, process, rationale) = if self.should_escalate(surprise, dom_pressure) {
+        let (proposal, process) = if self.should_escalate(surprise, dom_pressure) {
             self.metrics.deliberations += 1;
             self.last_deliberation = Some(self.world.tick());
 
@@ -1523,19 +1511,18 @@ impl Mind {
                 origin: dom,
                 priority: dom_pressure,
             };
-            (goal, Process::Deliberate, d.rationale)
+            (goal, Process::Deliberate)
         } else {
             let kind = self.fast_goal(dom);
-            let reason = self.fast_reason(dom, &kind);
             let goal = Goal {
                 kind,
                 origin: dom,
                 priority: dom_pressure,
             };
-            (goal, Process::Routine, reason)
+            (goal, Process::Routine)
         };
 
-        self.apply_commitment(proposal, process, rationale, dom_pressure)
+        self.apply_commitment(proposal, process, dom_pressure)
     }
 
     /// Decide whether to act on the new proposal or stay the course. Switching
@@ -1546,9 +1533,8 @@ impl Mind {
         &mut self,
         proposal: Goal,
         process: Process,
-        rationale: String,
         proposed_pressure: f32,
-    ) -> (Goal, Process, String) {
+    ) -> (Goal, Process) {
         // A deliberated decision is, by definition, a considered re-commitment.
         let deliberated = process == Process::Deliberate;
 
@@ -1562,19 +1548,14 @@ impl Mind {
 
             if !same && !satisfied && !clearly_better && !deliberated && !urgent {
                 // hold the line: keep pursuing the current intention.
-                let label = cur.kind.label();
                 self.held = true;
-                return (
-                    cur,
-                    Process::Routine,
-                    format!("staying with what I started — {label}"),
-                );
+                return (cur, Process::Routine);
             }
         }
         // adopt the proposal as the new commitment.
         self.held = false;
         self.committed = Some(proposal.clone());
-        (proposal, process, rationale)
+        (proposal, process)
     }
 
     /// The escalation policy: think hard on surprise, on high stakes, or on a
@@ -1583,11 +1564,9 @@ impl Mind {
     fn should_escalate(&self, surprise: f32, dom_pressure: f32) -> bool {
         let high_surprise = surprise >= self.cfg.surprise_threshold;
 
-        // ambiguity: are the two strongest pressures near-tied?
-        let mut pressures: Vec<f32> = Drive::ALL
-            .into_iter()
-            .map(|d| self.drives.level(d) * d.salience_weight())
-            .collect();
+        // ambiguity: are the two strongest pressures near-tied? Computed over a
+        // fixed-size stack array (one per drive) so the hot path allocates nothing.
+        let mut pressures = Drive::ALL.map(|d| self.drives.level(d) * d.salience_weight());
         pressures.sort_by(|a, b| b.total_cmp(a));
         let ambiguous = pressures.len() >= 2 && (pressures[0] - pressures[1]).abs() < self.cfg.tie_margin;
 
@@ -1639,8 +1618,7 @@ impl Mind {
                 .unwrap_or(GoalKind::Explore),
             Drive::Social => self
                 .world
-                .visible_of(EntityKind::Agent)
-                .first()
+                .first_visible_of(EntityKind::Agent)
                 .map(|a| GoalKind::Socialize(a.id))
                 .unwrap_or(GoalKind::Explore),
             // "free time" — steer it toward the standing life project.
@@ -1653,17 +1631,12 @@ impl Mind {
                     .unwrap_or(GoalKind::Explore),
                 Some(ProjectKind::Companionship) => self
                     .world
-                    .visible_of(EntityKind::Agent)
-                    .first()
+                    .first_visible_of(EntityKind::Agent)
                     .map(|a| GoalKind::Socialize(a.id))
                     .unwrap_or(GoalKind::Explore),
                 None => GoalKind::Explore,
             },
         }
-    }
-
-    fn fast_reason(&self, dom: Drive, kind: &GoalKind) -> String {
-        format!("{} pulls hardest; I'll {}", dom.name(), kind.label())
     }
 
     // ----- step 5/6: plan + act -------------------------------------------
@@ -1711,7 +1684,12 @@ impl Mind {
                     let lo = cands.iter().map(|(_, e)| *e).min().unwrap_or(0);
                     if hi.saturating_sub(lo) >= 3 {
                         if let Some((d, _)) = cands.iter().max_by_key(|(_, e)| *e) {
-                            self.plan = Some(Plan::new(goal.clone(), vec![Action::Move(*d)], self.world.tick()));
+                            let tick = self.world.tick();
+                            let mut steps = std::mem::take(&mut self.plan_steps_buf);
+                            steps.clear();
+                            steps.push(Action::Move(*d));
+                            self.set_plan(goal, &mut steps, tick);
+                            self.plan_steps_buf = steps;
                             return;
                         }
                     }
@@ -1739,11 +1717,12 @@ impl Mind {
                                 self.seen_bounds.1,
                             ) {
                                 self.detour_target = Some(tgt);
-                                self.plan = Some(Plan::new(
-                                    goal.clone(),
-                                    vec![Action::Move(d)],
-                                    self.world.tick(),
-                                ));
+                                let tick = self.world.tick();
+                                let mut steps = std::mem::take(&mut self.plan_steps_buf);
+                                steps.clear();
+                                steps.push(Action::Move(d));
+                                self.set_plan(goal, &mut steps, tick);
+                                self.plan_steps_buf = steps;
                                 return;
                             }
                         }
@@ -1786,18 +1765,38 @@ impl Mind {
             } else {
                 None
             };
-            self.plan = Some(plan_for_with(
+            // fill the reused step buffer, then refill the plan's deque in place —
+            // no per-replan allocation in steady state. `take`/restore satisfies the
+            // borrow checker (the planner borrows `&self.world` etc. while we hold
+            // `&mut self.plan_steps_buf`), exactly as `concept_scratch` does.
+            let mut steps = std::mem::take(&mut self.plan_steps_buf);
+            let tick = self.world.tick();
+            fill_plan_steps(
+                &mut steps,
                 goal,
                 &self.world,
                 &self.memory,
                 &self.danger,
                 &mut self.rng,
-                self.world.tick(),
                 forage_override,
                 contention,
                 my_urgency,
                 herd,
-            ));
+            );
+            self.set_plan(goal, &mut steps, tick);
+            // `steps` is now empty (drained into the plan); keep its capacity.
+            self.plan_steps_buf = steps;
+        }
+    }
+
+    /// (Re)aim the current plan at `goal` with the actions in `steps` (drained, so
+    /// each `Action` is *moved* not cloned — byte-identical, no extra alloc),
+    /// reusing the held plan's deque when one exists so a steady-state replan
+    /// allocates nothing.
+    fn set_plan(&mut self, goal: &Goal, steps: &mut Vec<Action>, tick: u64) {
+        match &mut self.plan {
+            Some(p) => p.refill(goal.clone(), steps.drain(..), tick),
+            None => self.plan = Some(Plan::new(goal.clone(), steps.drain(..), tick)),
         }
     }
 

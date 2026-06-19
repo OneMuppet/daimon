@@ -103,6 +103,16 @@ impl Plan {
         }
     }
 
+    /// Re-aim an existing plan at `goal` with `steps`, reusing the already-allocated
+    /// step deque (clear + extend) so a hot-path re-plan touches the heap only if the
+    /// deque must grow. Behaviour-equivalent to building a fresh [`Plan`].
+    pub fn refill(&mut self, goal: Goal, steps: impl IntoIterator<Item = Action>, formed: u64) {
+        self.goal = goal;
+        self.formed = formed;
+        self.steps.clear();
+        self.steps.extend(steps);
+    }
+
     pub fn is_done(&self) -> bool {
         self.steps.is_empty()
     }

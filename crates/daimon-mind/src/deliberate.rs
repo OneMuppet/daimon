@@ -33,7 +33,7 @@
 
 use crate::persona::Persona;
 use crate::theory_of_mind::TheoryOfMind;
-use daimon_core::{Drive, DriveSystem, EntityKind, GoalKind, Memory, WorldModel};
+use daimon_core::{Drive, DriveSystem, EntityId, EntityKind, GoalKind, Memory, WorldModel};
 
 /// Everything the deliberator is allowed to look at. A faithful, serialisable
 /// snapshot of the agent's situation — this is exactly what you would render
@@ -84,12 +84,76 @@ fn resource_feasibility(ctx: &DeliberationContext, kind: EntityKind, pos: daimon
     }
 }
 
-/// One candidate goal under consideration, with a computed utility and a human
-/// reason — the unit the deliberator argmaxes over.
+/// A candidate's justification, stored *unrendered* (no String) so only the
+/// winning candidate's reason is ever formatted — the loser reasons cost nothing.
+/// Each variant carries exactly the data its sentence interpolates; rendering one
+/// reproduces, byte-for-byte, the text the eager `format!`s used to build.
+#[derive(Debug, Clone, Copy)]
+enum Reason {
+    Flee { dist: f32 },
+    Hunger { pct: f32 },
+    Thirst { pct: f32 },
+    /// `who` is resolved from `ctx` only when this is the winner (see `render`),
+    /// so non-winning curio/agent reasons clone no label.
+    Investigate { id: EntityId },
+    SocializeLiked { id: EntityId },
+    SocializeWary { id: EntityId },
+    Explore,
+    Recover,
+}
+
+impl Reason {
+    /// Render the (winning) reason to the exact text the eager `format!`s produced.
+    /// Label-bearing variants resolve their name from `ctx` here — the same source
+    /// and fallback order as before — so the rationale is byte-identical.
+    fn render(&self, ctx: &DeliberationContext) -> String {
+        match self {
+            Reason::Flee { dist } => {
+                format!("a predator is {dist:.0} steps away; I've learned not to gamble with that")
+            }
+            Reason::Hunger { pct } => format!("hunger is at {:.0}%", pct * 100.0),
+            Reason::Thirst { pct } => format!("thirst is at {:.0}%", pct * 100.0),
+            Reason::Investigate { id } => {
+                let label = ctx
+                    .world
+                    .belief(*id)
+                    .map(|b| b.entity.label.as_str())
+                    .unwrap_or("");
+                format!("that {label} is unlike anything I've catalogued — I want to know what it is")
+            }
+            Reason::SocializeLiked { id } => {
+                format!("{} is nearby and I think well of them", who(ctx, *id))
+            }
+            Reason::SocializeWary { id } => {
+                format!("{} is nearby, though I'm wary of them", who(ctx, *id))
+            }
+            Reason::Explore => "there's still ground I haven't seen".to_string(),
+            Reason::Recover => "I'm exhausted and, for now, safe enough to rest".to_string(),
+        }
+    }
+}
+
+/// The name we'd use for agent `id`: their modelled name, else their world label —
+/// the same resolution (and fallback order) the socialize candidate used inline.
+fn who(ctx: &DeliberationContext, id: EntityId) -> String {
+    ctx.social
+        .model(id)
+        .map(|m| m.name.clone())
+        .unwrap_or_else(|| {
+            ctx.world
+                .belief(id)
+                .map(|b| b.entity.label.clone())
+                .unwrap_or_default()
+        })
+}
+
+/// One candidate goal under consideration, with a computed utility and an
+/// unrendered reason — the unit the deliberator argmaxes over.
+#[derive(Debug, Clone)]
 struct Candidate {
     goal: GoalKind,
     utility: f32,
-    reason: String,
+    reason: Reason,
 }
 
 /// An offline, deterministic stand-in for a reasoning LLM.
@@ -99,7 +163,12 @@ struct Candidate {
 /// picks the best — then explains itself. The explanation is what makes even
 /// this toy reasoner read as deliberate rather than reflexive.
 #[derive(Debug, Default, Clone)]
-pub struct HeuristicDeliberator;
+pub struct HeuristicDeliberator {
+    /// Reused candidate buffer: cleared and refilled each deliberation so the slow
+    /// path reuses its backing allocation instead of allocating a fresh Vec per
+    /// call. Not part of the verdict; never serialised.
+    cands: Vec<Candidate>,
+}
 
 impl Deliberator for HeuristicDeliberator {
     fn name(&self) -> &'static str {
@@ -118,7 +187,10 @@ impl Deliberator for HeuristicDeliberator {
             }
         };
         let pos = me.pos;
-        let mut cands: Vec<Candidate> = Vec::new();
+        // reuse the held candidate buffer (take/restore keeps `&mut self` happy and
+        // preserves the backing allocation across deliberations).
+        let mut cands = std::mem::take(&mut self.cands);
+        cands.clear();
 
         // --- survival / flee ------------------------------------------------
         if let Some(threat) = ctx.world.nearest_threat(pos) {
@@ -135,9 +207,7 @@ impl Deliberator for HeuristicDeliberator {
             cands.push(Candidate {
                 goal: GoalKind::Flee(threat.entity.id),
                 utility: u,
-                reason: format!(
-                    "a predator is {dist:.0} steps away; I've learned not to gamble with that"
-                ),
+                reason: Reason::Flee { dist },
             });
         }
 
@@ -148,7 +218,7 @@ impl Deliberator for HeuristicDeliberator {
             cands.push(Candidate {
                 goal: GoalKind::Forage,
                 utility: hunger * Drive::Hunger.salience_weight() * feas * ctx.drives.bias(Drive::Hunger),
-                reason: format!("hunger is at {:.0}%", hunger * 100.0),
+                reason: Reason::Hunger { pct: hunger },
             });
         }
 
@@ -159,7 +229,7 @@ impl Deliberator for HeuristicDeliberator {
             cands.push(Candidate {
                 goal: GoalKind::Hydrate,
                 utility: thirst * Drive::Thirst.salience_weight() * feas * ctx.drives.bias(Drive::Thirst),
-                reason: format!("thirst is at {:.0}%", thirst * 100.0),
+                reason: Reason::Thirst { pct: thirst },
             });
         }
 
@@ -173,33 +243,25 @@ impl Deliberator for HeuristicDeliberator {
             cands.push(Candidate {
                 goal: GoalKind::Investigate(curio.entity.id),
                 utility: u,
-                reason: format!(
-                    "that {} is unlike anything I've catalogued — I want to know what it is",
-                    curio.entity.label
-                ),
+                reason: Reason::Investigate { id: curio.entity.id },
             });
         }
 
         // --- socialize ------------------------------------------------------
-        if let Some(other) = ctx.world.visible_of(EntityKind::Agent).into_iter().next() {
+        if let Some(other) = ctx.world.first_visible_of(EntityKind::Agent) {
             let disp = ctx.social.disposition(other.id);
             let social = ctx.drives.level(Drive::Social) * ctx.persona.sociability;
             // we approach those we like; dislike suppresses the urge.
             let u = (social + disp * 0.5).max(0.0)
                 * Drive::Social.salience_weight()
                 * ctx.drives.bias(Drive::Social);
-            let who = ctx
-                .social
-                .model(other.id)
-                .map(|m| m.name.clone())
-                .unwrap_or_else(|| other.label.clone());
             cands.push(Candidate {
                 goal: GoalKind::Socialize(other.id),
                 utility: u,
                 reason: if disp >= 0.0 {
-                    format!("{who} is nearby and I think well of them")
+                    Reason::SocializeLiked { id: other.id }
                 } else {
-                    format!("{who} is nearby, though I'm wary of them")
+                    Reason::SocializeWary { id: other.id }
                 },
             });
         }
@@ -212,7 +274,7 @@ impl Deliberator for HeuristicDeliberator {
                 utility: (curiosity * 0.8 + ctx.surprise * 0.3)
                     * Drive::Curiosity.salience_weight()
                     * ctx.drives.bias(Drive::Curiosity),
-                reason: "there's still ground I haven't seen".into(),
+                reason: Reason::Explore,
             });
         }
 
@@ -226,18 +288,23 @@ impl Deliberator for HeuristicDeliberator {
             cands.push(Candidate {
                 goal: GoalKind::Recover,
                 utility: (1.0 - me.energy) * 1.2,
-                reason: "I'm exhausted and, for now, safe enough to rest".into(),
+                reason: Reason::Recover,
             });
         }
 
-        // argmax — deterministic tie-break by insertion order.
-        let best = cands
-            .into_iter()
-            .max_by(|a, b| a.utility.total_cmp(&b.utility))
+        // argmax — `max_by` over the indexed candidates returns the last of any
+        // equal-utility run, identical to the previous `into_iter().max_by(..)`.
+        let best_i = cands
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.utility.total_cmp(&b.utility))
+            .map(|(i, _)| i)
             .expect("explore is always a candidate");
+        let best_goal = cands[best_i].goal.clone();
+        let best_reason = cands[best_i].reason; // Copy; only the winner is rendered
 
         let mut lessons = Vec::new();
-        if matches!(best.goal, GoalKind::Flee(_)) {
+        if matches!(best_goal, GoalKind::Flee(_)) {
             lessons.push(Lesson {
                 key: "predator".into(),
                 statement: "predators are dangerous; keep distance".into(),
@@ -245,10 +312,14 @@ impl Deliberator for HeuristicDeliberator {
             });
         }
 
-        let label = best.goal.label();
+        let label = best_goal.label();
+        let rationale = format!("I weighed my options: {}. I'll {label}.", best_reason.render(ctx));
+        // return the (now-empty after restore) buffer to the deliberator for reuse.
+        cands.clear();
+        self.cands = cands;
         Deliberation {
-            goal: best.goal,
-            rationale: format!("I weighed my options: {}. I'll {}.", best.reason, label),
+            goal: best_goal,
+            rationale,
             lessons,
         }
     }

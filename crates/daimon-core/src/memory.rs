@@ -168,16 +168,21 @@ impl Memory {
     /// Assert or reinforce a fact. Re-asserting an existing fact raises its
     /// confidence (evidence accumulation) rather than duplicating it.
     pub fn learn(&mut self, key: &str, statement: &str, confidence: f32, tick: u64) {
-        self.semantic
-            .entry(key.to_string())
-            .and_modify(|f| {
-                f.confidence = (f.confidence + confidence * 0.5).min(1.0);
-            })
-            .or_insert(Fact {
-                statement: statement.to_string(),
-                confidence: confidence.clamp(0.0, 1.0),
-                learned_tick: tick,
-            });
+        // Re-asserting a known fact (the steady-state case) takes the lookup path and
+        // allocates nothing — neither the key nor the statement. Only a genuinely new
+        // fact allocates, exactly as before.
+        if let Some(f) = self.semantic.get_mut(key) {
+            f.confidence = (f.confidence + confidence * 0.5).min(1.0);
+        } else {
+            self.semantic.insert(
+                key.to_string(),
+                Fact {
+                    statement: statement.to_string(),
+                    confidence: confidence.clamp(0.0, 1.0),
+                    learned_tick: tick,
+                },
+            );
+        }
     }
 
     pub fn fact(&self, key: &str) -> Option<&Fact> {
@@ -219,14 +224,29 @@ impl Memory {
     // --- spatial ----------------------------------------------------------
 
     pub fn note_place(&mut self, id: EntityId, pos: Pos, label: &str, kind: EntityKind) {
-        self.places.insert(
-            id,
-            Place {
-                pos,
-                label: label.to_string(),
-                kind,
-            },
-        );
+        // Update an existing place in place, reusing its label allocation when the
+        // label is unchanged (the steady-state case) so re-noting a known place
+        // clones no String. Byte-identical to re-inserting a fresh `Place`.
+        match self.places.get_mut(&id) {
+            Some(p) => {
+                p.pos = pos;
+                p.kind = kind;
+                if p.label != label {
+                    p.label.clear();
+                    p.label.push_str(label);
+                }
+            }
+            None => {
+                self.places.insert(
+                    id,
+                    Place {
+                        pos,
+                        label: label.to_string(),
+                        kind,
+                    },
+                );
+            }
+        }
     }
 
     pub fn known_place(&self, id: EntityId) -> Option<(Pos, &str)> {

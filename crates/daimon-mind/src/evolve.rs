@@ -268,7 +268,7 @@ impl Genome {
         let mut mind = Mind::with(
             persona,
             seed,
-            Box::new(crate::deliberate::HeuristicDeliberator),
+            Box::new(crate::deliberate::HeuristicDeliberator::default()),
             self.config(),
         );
         mind.set_empowerment(self.empowerment());

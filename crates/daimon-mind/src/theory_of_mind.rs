@@ -54,19 +54,20 @@ pub struct TheoryOfMind {
 impl TheoryOfMind {
     /// Register or refresh a sighting of another agent.
     pub fn observe(&mut self, e: &Entity, tick: u64) {
-        let label = e.label.clone();
+        // clone the label only when inserting a new model (the `or_insert_with`
+        // closure runs only then); re-observing a known agent allocates nothing.
         self.models
             .entry(e.id)
             .and_modify(|m| {
                 m.last_seen = tick;
                 m.last_pos = Some(e.pos);
             })
-            .or_insert(AgentModel {
+            .or_insert_with(|| AgentModel {
                 id: e.id,
-                name: if label.is_empty() {
+                name: if e.label.is_empty() {
                     format!("stranger-{}", e.id.0)
                 } else {
-                    label
+                    e.label.clone()
                 },
                 disposition: 0.15,
                 believed_goal: None,

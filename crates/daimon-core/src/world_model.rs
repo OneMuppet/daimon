@@ -53,19 +53,35 @@ impl WorldModel {
 
         let mut newly = Vec::new();
         for e in &p.visible {
-            let is_new = !self.beliefs.contains_key(&e.id);
-            if is_new {
-                newly.push(e.id);
+            match self.beliefs.get_mut(&e.id) {
+                // Re-observing a known entity: update the belief in place, reusing the
+                // stored label allocation when the label is unchanged (the common
+                // case) so steady-state perception clones no Strings. The resulting
+                // Belief is byte-identical to a fresh `e.clone()` insert.
+                Some(b) => {
+                    b.entity.kind = e.kind;
+                    b.entity.pos = e.pos;
+                    if b.entity.label != e.label {
+                        b.entity.label.clear();
+                        b.entity.label.push_str(&e.label);
+                    }
+                    b.last_seen = p.tick;
+                    b.confidence = 1.0;
+                    b.visible = true;
+                }
+                None => {
+                    newly.push(e.id);
+                    self.beliefs.insert(
+                        e.id,
+                        Belief {
+                            entity: e.clone(),
+                            last_seen: p.tick,
+                            confidence: 1.0,
+                            visible: true,
+                        },
+                    );
+                }
             }
-            self.beliefs.insert(
-                e.id,
-                Belief {
-                    entity: e.clone(),
-                    last_seen: p.tick,
-                    confidence: 1.0,
-                    visible: true,
-                },
-            );
         }
 
         // Out-of-sight beliefs lose confidence; forget the truly stale.
@@ -96,6 +112,16 @@ impl WorldModel {
             .filter(|b| b.visible && b.entity.kind == kind)
             .map(|b| &b.entity)
             .collect()
+    }
+
+    /// The first currently-visible entity of a given kind (by belief order), without
+    /// collecting — the allocation-free form of `visible_of(kind).first()` /
+    /// `.into_iter().next()`. Order is identical (both iterate `beliefs.values()`).
+    pub fn first_visible_of(&self, kind: EntityKind) -> Option<&Entity> {
+        self.beliefs
+            .values()
+            .find(|b| b.visible && b.entity.kind == kind)
+            .map(|b| &b.entity)
     }
 
     /// Nearest believed entity of a kind (visible or remembered), by distance

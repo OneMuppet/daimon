@@ -77,29 +77,54 @@ pub fn plan_for_with(
     my_urgency: f32,
     herd: Option<Herd>,
 ) -> Plan {
+    let mut steps: Vec<Action> = Vec::new();
+    fill_plan_steps(
+        &mut steps, goal, world, memory, danger, rng, forage_override, contention, my_urgency, herd,
+    );
+    Plan::new(goal.clone(), steps, tick)
+}
+
+/// Fill `out` (cleared first) with the ordered actions pursuing `goal`. The
+/// allocation-free core of [`plan_for_with`]: the hot path passes a reused buffer
+/// so a (re)plan touches the heap only when the buffer must grow.
+#[allow(clippy::too_many_arguments)]
+pub fn fill_plan_steps(
+    out: &mut Vec<Action>,
+    goal: &Goal,
+    world: &WorldModel,
+    memory: &Memory,
+    danger: &Danger,
+    rng: &mut Rng,
+    forage_override: Option<(EntityId, Pos)>,
+    contention: &[(Pos, f32)],
+    my_urgency: f32,
+    herd: Option<Herd>,
+) {
     let me = world.me();
     let pos = me.map(|m| m.pos).unwrap_or(Pos::new(0, 0));
+    out.clear();
 
-    let steps: Vec<Action> = match &goal.kind {
-        GoalKind::Flee(threat) => flee_steps(*threat, world, danger, pos, rng, herd),
+    match &goal.kind {
+        GoalKind::Flee(threat) => flee_steps(out, *threat, world, danger, pos, rng, herd),
         // approach the threat and strike when adjacent — ignoring the learned
         // danger field (you can't confront a thing while avoiding it).
         GoalKind::Confront(threat) => match world.belief(*threat) {
-            Some(b) => path_to(pos, b.entity.pos, Action::Strike(*threat)),
-            None => wander(pos, world, danger, rng),
+            Some(b) => path_to(out, pos, b.entity.pos, Action::Strike(*threat)),
+            None => wander(out, pos, world, danger, rng),
         },
         GoalKind::Forage => match forage_override {
-            Some((id, tp)) => path_to(pos, tp, Action::Eat(id)),
-            None => seek_then(EntityKind::Food, world, memory, danger, pos, rng, contention, my_urgency, Action::Eat),
+            Some((id, tp)) => path_to(out, pos, tp, Action::Eat(id)),
+            None => seek_then(out, EntityKind::Food, world, memory, danger, pos, rng, contention, my_urgency, Action::Eat),
         },
         GoalKind::Hydrate => match forage_override {
-            Some((id, tp)) => path_to(pos, tp, Action::Drink(id)),
-            None => seek_then(EntityKind::Water, world, memory, danger, pos, rng, contention, my_urgency, Action::Drink),
+            Some((id, tp)) => path_to(out, pos, tp, Action::Drink(id)),
+            None => seek_then(out, EntityKind::Water, world, memory, danger, pos, rng, contention, my_urgency, Action::Drink),
         },
         GoalKind::Investigate(id) => {
-            seek_specific(*id, world, danger, pos, rng, Action::Inspect(*id))
+            seek_specific(out, *id, world, danger, pos, rng, Action::Inspect(*id))
         }
         GoalKind::Socialize(id) => seek_specific(
+            out,
             *id,
             world,
             danger,
@@ -110,21 +135,21 @@ pub fn plan_for_with(
                 text: greeting(*id, memory),
             },
         ),
-        GoalKind::Explore => wander(pos, world, danger, rng),
-        GoalKind::Recover => vec![Action::Rest],
+        GoalKind::Explore => wander(out, pos, world, danger, rng),
+        GoalKind::Recover => out.push(Action::Rest),
         // SHELTER: enclose the self. If a side is still open, wall the cell on the
         // gap the body senses; once fully enclosed there is nothing to build, so
         // rest (safe inside) — never a scripted hut, just "close the next gap".
         GoalKind::Shelter => match me.and_then(|m| m.shelter_gap) {
-            Some(d) => vec![Action::Build(pos.step(d))],
-            None => vec![Action::Rest],
+            Some(d) => out.push(Action::Build(pos.step(d))),
+            None => out.push(Action::Rest),
         },
         // MOURN (loss-oriented coping): withdraw and be still. The grieving mind
         // pulls back from foraging and social initiative — it idles in place and
         // reminisces (the reminiscence is the narration). Resting also lets it
         // recover, so withdrawal is not self-destructive. The Dual-Process swing
         // back to ordinary goals is driven in `decide`, not here.
-        GoalKind::Mourn => vec![Action::Rest],
+        GoalKind::Mourn => out.push(Action::Rest),
         // PROVISION (stock up against winter): a two-phase plan the body's senses
         // drive. If carrying a surplus and the granary's direction is known, step
         // toward it and Store; otherwise step toward the nearest harvestable source
@@ -138,22 +163,23 @@ pub fn plan_for_with(
             let gather_dir = me.and_then(|m| m.gather_dir);
             match (carrying >= PROVISION_LOAD, store_dir, gather_dir) {
                 // carrying a load and the cache is somewhere: head there and store.
-                (true, Some(d), _) => step_then(pos, d, Action::Store),
+                (true, Some(d), _) => step_then(out, pos, d, Action::Store),
                 // room to carry more and a source is known: head there and gather.
-                (false, _, Some(d)) => step_then(pos, d, Action::Gather),
+                (false, _, Some(d)) => step_then(out, pos, d, Action::Gather),
                 // carrying a load but the cache is right here (no dir): store now.
-                (true, None, _) => vec![Action::Store],
+                (true, None, _) => out.push(Action::Store),
                 // WINTER homing: nothing to gather, not carrying — but the hearth has
                 // a direction (the cache/warmth is over there). Walk home; the world
                 // auto-draws the stores once we're in the hearth's radius.
-                (false, Some(d), None) => vec![Action::Move(d); 2],
+                (false, Some(d), None) => {
+                    out.push(Action::Move(d));
+                    out.push(Action::Move(d));
+                }
                 // nothing sensed: stay put by the warmth / look around.
-                (false, None, None) => vec![Action::Rest],
+                (false, None, None) => out.push(Action::Rest),
             }
         }
-    };
-
-    Plan::new(goal.clone(), steps, tick)
+    }
 }
 
 /// Move to evade a threat for a few steps.
@@ -173,15 +199,17 @@ pub fn plan_for_with(
 /// Fully deterministic — derived from the perceived predator + ally positions, no
 /// RNG draw — so the gate stays clean.
 fn flee_steps(
+    out: &mut Vec<Action>,
     threat: EntityId,
     world: &WorldModel,
     danger: &Danger,
     pos: Pos,
     rng: &mut Rng,
     herd: Option<Herd>,
-) -> Vec<Action> {
+) {
     let Some(b) = world.belief(threat) else {
-        return wander(pos, world, danger, rng);
+        wander(out, pos, world, danger, rng);
+        return;
     };
     let tp = b.entity.pos;
 
@@ -193,7 +221,10 @@ fn flee_steps(
                 .into_iter()
                 .max_by_key(|d| pos.step(*d).manhattan(tp))
                 .unwrap_or(Dir::North);
-            return vec![Action::Move(best); 3];
+            for _ in 0..3 {
+                out.push(Action::Move(best));
+            }
+            return;
         }
     };
     let allies = herd.expect("cohesion>0 implies herd present").allies;
@@ -234,13 +265,16 @@ fn flee_steps(
         })
         .unwrap_or(Dir::North);
     let _ = rng; // herd path is deterministic; rng kept for signature parity.
-    vec![Action::Move(best); 3]
+    for _ in 0..3 {
+        out.push(Action::Move(best));
+    }
 }
 
 /// Head to the nearest known entity of `kind`, then perform `finish`. If none is
 /// known, wander to look for one.
 #[allow(clippy::too_many_arguments)]
 fn seek_then(
+    out: &mut Vec<Action>,
     kind: EntityKind,
     world: &WorldModel,
     memory: &Memory,
@@ -250,7 +284,7 @@ fn seek_then(
     contention: &[(Pos, f32)],
     my_urgency: f32,
     finish: impl Fn(EntityId) -> Action,
-) -> Vec<Action> {
+) {
     // balance need against risk: pick the resource that minimises travel *plus*
     // a penalty for known danger — a closer berry in a dangerous spot loses to a
     // slightly farther safe one — *plus* a commons penalty so the agent yields a
@@ -312,75 +346,73 @@ fn seek_then(
     };
 
     match target {
-        Some((id, tp)) => path_to(pos, tp, finish(id)),
-        None => wander(pos, world, danger, rng),
+        Some((id, tp)) => path_to(out, pos, tp, finish(id)),
+        None => wander(out, pos, world, danger, rng),
     }
 }
 
 /// Head to a specific entity (predator-free target) and finish with `finish`.
 fn seek_specific(
+    out: &mut Vec<Action>,
     id: EntityId,
     world: &WorldModel,
     danger: &Danger,
     pos: Pos,
     rng: &mut Rng,
     finish: Action,
-) -> Vec<Action> {
+) {
     match world.belief(id) {
-        Some(b) => path_to(pos, b.entity.pos, finish),
-        None => wander(pos, world, danger, rng),
+        Some(b) => path_to(out, pos, b.entity.pos, finish),
+        None => wander(out, pos, world, danger, rng),
     }
 }
 
 /// Greedy Manhattan path of up to `HORIZON` steps toward `target`, finishing
 /// with `finish` once adjacent/co-located. No obstacles in this world, so a
 /// greedy step is also an optimal one.
-fn path_to(from: Pos, target: Pos, finish: Action) -> Vec<Action> {
-    let mut steps = Vec::new();
+fn path_to(out: &mut Vec<Action>, from: Pos, target: Pos, finish: Action) {
+    let start = out.len();
     let mut cur = from;
-    while cur.manhattan(target) > 1 && steps.len() < HORIZON {
+    while cur.manhattan(target) > 1 && out.len() - start < HORIZON {
         let d = cur.toward(target);
         cur = cur.step(d);
-        steps.push(Action::Move(d));
+        out.push(Action::Move(d));
     }
     if cur.manhattan(target) <= 1 {
-        steps.push(finish);
+        out.push(finish);
     }
-    if steps.is_empty() {
-        steps.push(Action::Wait);
+    if out.len() == start {
+        out.push(Action::Wait);
     }
-    steps
 }
 
 /// One step in a sensed direction, then perform `finish` (which the world resolves
 /// only if the agent is actually adjacent to / on the relevant feature). Used by
 /// Provision, whose Gather/Store targets are sensed as a direction, not a belief id.
-fn step_then(_from: Pos, dir: Dir, finish: Action) -> Vec<Action> {
-    vec![Action::Move(dir), finish]
+fn step_then(out: &mut Vec<Action>, _from: Pos, dir: Dir, finish: Action) {
+    out.push(Action::Move(dir));
+    out.push(finish);
 }
 
 /// Curiosity-biased wandering: prefer directions that lead away from where we
 /// already are, with a little randomness so it never looks like a patrol.
-fn wander(pos: Pos, _world: &WorldModel, danger: &Danger, rng: &mut Rng) -> Vec<Action> {
-    let mut steps = Vec::new();
+fn wander(out: &mut Vec<Action>, pos: Pos, _world: &WorldModel, danger: &Danger, rng: &mut Rng) {
     let mut cur = pos;
     for _ in 0..2 {
         // jitter + slight push outward, strongly damped toward dangerous cells:
-        // the agent has *learned* to give certain places a wide berth.
-        let weights: Vec<f32> = Dir::ALL
-            .iter()
-            .map(|d| {
-                let np = cur.step(*d);
-                let base = 1.0 + (np.x.abs() + np.y.abs()) as f32 * 0.02 + rng.next_f32();
-                base / (1.0 + danger_at(danger, np) * 4.0)
-            })
-            .collect();
+        // the agent has *learned* to give certain places a wide berth. The weights
+        // live on the stack (fixed 4 directions) so wandering allocates nothing.
+        let mut weights = [0.0f32; 4];
+        for (w, d) in weights.iter_mut().zip(Dir::ALL.iter()) {
+            let np = cur.step(*d);
+            let base = 1.0 + (np.x.abs() + np.y.abs()) as f32 * 0.02 + rng.next_f32();
+            *w = base / (1.0 + danger_at(danger, np) * 4.0);
+        }
         let idx = rng.weighted(&weights).unwrap_or(0);
         let d = Dir::ALL[idx];
         cur = cur.step(d);
-        steps.push(Action::Move(d));
+        out.push(Action::Move(d));
     }
-    steps
 }
 
 /// Compose a greeting whose warmth reflects what we remember of the other agent.
