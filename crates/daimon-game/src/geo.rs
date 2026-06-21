@@ -355,6 +355,82 @@ fn mul(c: [f32; 4], k: f32) -> [f32; 4] {
     [c[0] * k, c[1] * k, c[2] * k, c[3]]
 }
 
+/// Draw an ERA-APPROPRIATE WEAPON in a warrior's right hand (Civilization Sprint 2).
+/// `weapon` is a small code matching `sim::Weapon` (0 club, 1 sword, 2 musket, 3 energy)
+/// so geo stays free of any sim dependency. The piece is built in the figure's LOCAL
+/// frame (fwd/side/up) at the right-hand grip, swinging slightly with the gait, and
+/// tinted per era. Pure function of the inputs; called by the renderer only for minds the
+/// world reports as mustered warriors, so non-war views draw nothing here.
+#[allow(clippy::too_many_arguments)]
+pub fn push_weapon(
+    out: &mut Vec<LitVertex>,
+    x: f32,
+    gy: f32,
+    z: f32,
+    heading: f32,
+    sc: f32,
+    phase: f32,
+    stride: f32,
+    weapon: u8,
+) {
+    let st = stride.clamp(0.0, 1.0);
+    let (sw, _cw) = phase.sin_cos();
+    // the right hand: side = -0.165 (mirrors push_villager's right arm), carried a touch
+    // forward + a hand-height down from the shoulder, swinging gently with the arm.
+    let arm_swing = -sw * 0.45 * st;
+    let hip = 0.30 * (1.0 - 0.25 * (1.0 - sc).clamp(0.0, 1.0));
+    let torso_h = 0.30 * (1.0 - 0.18 * (1.0 - sc).clamp(0.0, 1.0));
+    let sh_up = hip + torso_h * 2.0; // shoulder height (local, pre-scale)
+    let hand_side = -0.165;
+    let grip_fwd = 0.16 + arm_swing * 0.10; // out in front of the body
+    let grip_up = sh_up - 0.16; // about hand height
+    // metallic/wood tints by era.
+    let wood = [0.40, 0.26, 0.15, 1.0];
+    let bronze = [0.72, 0.52, 0.26, 1.0];
+    let steel = [0.74, 0.78, 0.84, 1.0];
+    let dark_iron = [0.22, 0.22, 0.26, 1.0];
+    let energy = [0.45, 0.85, 1.0, 1.0];
+    match weapon {
+        // CLUB (Stone): a stubby heavy timber haft with a fat head.
+        0 => {
+            push_fixed(out, x, gy, z, heading, sc, grip_fwd, hand_side, grip_up, [0.022, 0.022, 0.13], wood);
+            push_fixed(out, x, gy, z, heading, sc, grip_fwd, hand_side, grip_up + 0.14, [0.05, 0.05, 0.06], mul(wood, 0.8));
+        }
+        // SWORD (Bronze/Iron): a long blade + crossguard, and a round shield on the off-hand.
+        1 => {
+            push_fixed(out, x, gy, z, heading, sc, grip_fwd, hand_side, grip_up + 0.10, [0.016, 0.016, 0.20], steel); // blade
+            push_fixed(out, x, gy, z, heading, sc, grip_fwd, hand_side, grip_up - 0.02, [0.07, 0.012, 0.02], bronze); // crossguard
+            push_fixed(out, x, gy, z, heading, sc, grip_fwd, hand_side, grip_up - 0.07, [0.018, 0.018, 0.04], wood); // grip
+            // round shield carried on the LEFT (off-hand) arm.
+            push_fixed(out, x, gy, z, heading, sc, 0.10, 0.165, sh_up - 0.18, [0.02, 0.10, 0.10], bronze);
+        }
+        // MUSKET/RIFLE (Industrial): a long barrel + stock held across the body (ranged).
+        2 => {
+            push_fixed(out, x, gy, z, heading, sc, grip_fwd + 0.10, hand_side, grip_up + 0.04, [0.20, 0.018, 0.018], dark_iron); // barrel (points fwd)
+            push_fixed(out, x, gy, z, heading, sc, grip_fwd - 0.06, hand_side, grip_up - 0.02, [0.06, 0.03, 0.02], wood); // stock
+        }
+        // ENERGY ARM (Space): a sleek emitter with a glowing core (ranged).
+        _ => {
+            push_fixed(out, x, gy, z, heading, sc, grip_fwd + 0.06, hand_side, grip_up + 0.02, [0.12, 0.03, 0.03], steel); // body
+            push_fixed(out, x, gy, z, heading, sc, grip_fwd + 0.18, hand_side, grip_up + 0.02, [0.03, 0.035, 0.035], energy); // glowing muzzle
+        }
+    }
+}
+
+/// The local-frame right-hand grip world position for a warrior (so the renderer can
+/// anchor a muzzle flash / clash spark there). Mirrors `push_weapon`'s grip math.
+pub fn weapon_muzzle(x: f32, gy: f32, z: f32, heading: f32, sc: f32, ranged: bool) -> [f32; 3] {
+    let hip = 0.30 * (1.0 - 0.25 * (1.0 - sc).clamp(0.0, 1.0));
+    let torso_h = 0.30 * (1.0 - 0.18 * (1.0 - sc).clamp(0.0, 1.0));
+    let sh_up = hip + torso_h * 2.0;
+    let fwd = if ranged { 0.16 + 0.30 } else { 0.16 + 0.16 };
+    let side = -0.165;
+    let up = sh_up - 0.12;
+    let (sh, ch) = heading.sin_cos();
+    let (fwd, side, up) = (fwd * sc, side * sc, up * sc);
+    [x + fwd * ch - side * sh, gy + up, z + fwd * sh + side * ch]
+}
+
 /// The height (above the ground) of a villager's crown for scale `sc` — so the
 /// renderer can hover a soul-spark just above the head and place labels. Mirrors
 /// the proportions inside [`push_villager`].

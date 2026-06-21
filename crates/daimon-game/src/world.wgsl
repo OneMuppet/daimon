@@ -199,12 +199,20 @@ fn fs_blit(in : BlitOut) -> @location(0) vec4<f32> {
     let bg = pu.horizon_fogfar.rgb;
     let is_sky = 1.0 - smoothstep(0.015, 0.10, distance(base, bg));
     let suv0 = sun_screen_uv();
-    let sky_top = vec3<f32>(0.16, 0.23, 0.44);
-    let sky_mid = vec3<f32>(0.46, 0.46, 0.62);
-    let sky_low = vec3<f32>(1.00, 0.66, 0.40); // warm gold horizon band
+    let sky_top  = vec3<f32>(0.16, 0.23, 0.44);
+    let sky_mid  = vec3<f32>(0.40, 0.45, 0.62);
+    let sky_deep = vec3<f32>(0.10, 0.16, 0.30); // calm deep atmosphere/sea below the horizon
+    let sky_glow = vec3<f32>(1.00, 0.66, 0.40); // warm gold horizon GLOW (a thin band, not a slab)
     let gy = in.uv.y; // 0 top .. 1 bottom
-    var sky = mix(sky_top, sky_mid, smoothstep(0.0, 0.55, gy));
-    sky = mix(sky, sky_low, smoothstep(0.42, 0.72, gy));
+    // deep blue up top easing through a lighter haze, then SETTLING into a calm deep
+    // tone toward the bottom — so a fully-zoomed-out frame reads as sky/sea, never a
+    // glaring gold slab along the bottom edge.
+    var sky = mix(sky_top, sky_mid, smoothstep(0.0, 0.6, gy));
+    sky = mix(sky, sky_deep, smoothstep(0.6, 1.0, gy));
+    // a THIN warm horizon glow floating where the land meets the sky (gaussian band ~0.62),
+    // fading to nothing both above and below so the bottom stays calm.
+    let band = exp(-pow((gy - 0.62) / 0.11, 2.0));
+    sky = mix(sky, sky_glow, band * 0.55);
     // a soft sun disc + halo glow on the sky.
     let sd = distance(in.uv, suv0);
     sky += vec3<f32>(1.0, 0.82, 0.55) * exp(-sd * 9.0) * 1.2 * pu.sun_dir.w;

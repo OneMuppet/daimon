@@ -96,6 +96,14 @@ pub struct MindConfig {
     /// the mind then senses no factions and biases its movement for none.
     #[serde(default)]
     pub village_affinity: bool,
+    /// Whether the agent will TAKE UP ARMS for its village when its settlement goes
+    /// to WAR with an enemy (Sprint 2 weapons & war) — it can be mustered into a
+    /// warband, march to the border and fight. Off by default — a mind with it off is
+    /// never conscripted, so the seeded harness fields no warriors and stays
+    /// bit-identical. The whole warfare system lives in the world behind its `war`
+    /// flag, off the dedicated `war_rng`; the live game flips this gene on.
+    #[serde(default)]
+    pub can_war: bool,
 }
 
 impl Default for MindConfig {
@@ -115,6 +123,7 @@ impl Default for MindConfig {
             can_age: false,
             feel_happiness: false,
             village_affinity: false,
+            can_war: false,
         }
     }
 }
@@ -640,6 +649,15 @@ impl Mind {
     /// inter-village wariness nudge). Off by default — non-society worlds inert.
     pub fn village_affinity(&self) -> bool {
         self.cfg.village_affinity
+    }
+    /// Let the agent bear arms for its village in war (can-war). Off by default.
+    pub fn set_can_war(&mut self, on: bool) {
+        self.cfg.can_war = on;
+    }
+    /// Whether this mind will be mustered into a warband (the world reads this when
+    /// fielding combatants). Off by default — non-war worlds field no warriors.
+    pub fn can_war(&self) -> bool {
+        self.cfg.can_war
     }
     /// The mind's **happiness** — its felt contentment in `[0,1]`, raised by met
     /// needs / health / good feeling (and, in the live game, by family + safety via

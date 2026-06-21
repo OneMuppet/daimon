@@ -31,7 +31,7 @@ use crate::mind::{Mind, MindConfig};
 use crate::persona::Persona;
 
 /// Number of genes in the cognitive genome.
-pub const N_GENES: usize = 34;
+pub const N_GENES: usize = 35;
 
 /// A cognitive genome: a point in the architecture's tunable space, stored as
 /// `N_GENES` normalised genes in `[0,1]` and decoded into real cognitive knobs.
@@ -150,6 +150,13 @@ impl Genome {
         // lives in the world behind its `society` flag, off the dedicated `soc_rng`;
         // the live game flips this gene on by cloning showcase.
         g[33] = 0.0; // village-affinity off (no settlement identity — incumbent solitary)
+        // --- warfare gene (Civilization Sprint 2) — default OFF in BOTH presets so
+        // every existing AC/proof/fitness run stays byte-identical: a mind with it off
+        // is never mustered into a warband, draws no war RNG, and fields no warrior.
+        // The whole WARFARE system (warbands, era weapons, battles, casualties,
+        // truce) lives in the world behind its `war` flag, off the dedicated
+        // `war_rng`; the live game flips this gene on for its village minds.
+        g[34] = 0.0; // can-war off (never takes up arms — incumbent non-combatant)
         Genome { g }
     }
 
@@ -196,6 +203,7 @@ impl Genome {
             can_age: self.can_age(),
             feel_happiness: self.feel_happiness(),
             village_affinity: self.village_affinity(),
+            can_war: self.can_war(),
         }
     }
     /// Persona deltas in `[-0.3, 0.3]`, applied on top of a base character so the
@@ -362,6 +370,16 @@ impl Genome {
         self.g[33] >= 0.5
     }
 
+    /// Whether the mind will *bear arms for its village in war* (Sprint 2 weapons &
+    /// war) — it can be mustered into a warband, march to the border and fight an
+    /// enemy village's combatants. Off by default — a mind with it off is never
+    /// conscripted, draws no war RNG, and the seeded harness fields no warriors and
+    /// stays byte-identical (the warfare registry lives in the world behind its `war`
+    /// flag). The live game flips it on for its village minds.
+    pub fn can_war(&self) -> bool {
+        self.g[34] >= 0.5
+    }
+
     /// Express this genome as a live [`Mind`], applying the persona deltas on top
     /// of a base character (preserving its identity and diversity).
     pub fn express(&self, base: &Persona, seed: u64) -> Mind {
@@ -398,6 +416,7 @@ impl Genome {
         mind.set_can_reproduce(self.can_reproduce());
         mind.set_can_age(self.can_age());
         mind.set_feel_happiness(self.feel_happiness());
+        mind.set_can_war(self.can_war());
         mind.install_overlay(
             self.nn_enabled(),
             seed,
@@ -749,7 +768,7 @@ mod tests {
     fn engine_improves_and_learns() {
         let target = [
             0.9, 0.1, 0.8, 0.2, 0.7, 0.3, 0.6, 0.4, 1.0, 0.0, 1.0, 0.0, 1.0, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-            1.0, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+            1.0, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         ];
         let eval = synthetic(target);
         let mut evo = Evolution::new(0xA11CE, 16, &eval);

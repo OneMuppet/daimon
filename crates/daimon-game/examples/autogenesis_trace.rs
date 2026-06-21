@@ -12,7 +12,7 @@ use daimon_mind::evolve::{Evolution, Fitness, Genome, Verdict, WEIGHTS, N_GENES}
 const GENE_NAMES: [&str; N_GENES] = [
     "surprise_thresh", "delib_cooldown", "tie_margin", "reflect_interval", "plan_staleness",
     "Δboldness", "Δsociability", "Δcuriosity", "empowerment", "consolidation", "imagination",
-    "metamotivation", "quantum", "foresight", "forage_drr", "social_forage", "cultural", "lp_curiosity", "stigmergy", "affect_mod", "can_fight", "can_build", "can_die", "can_grieve", "can_provision", "nn_enabled", "nn_learn_rate", "nn_modulation", "herd_evasion", "can_mate", "can_reproduce", "can_age", "feel_happiness", "village_affinity",
+    "metamotivation", "quantum", "foresight", "forage_drr", "social_forage", "cultural", "lp_curiosity", "stigmergy", "affect_mod", "can_fight", "can_build", "can_die", "can_grieve", "can_provision", "nn_enabled", "nn_learn_rate", "nn_modulation", "herd_evasion", "can_mate", "can_reproduce", "can_age", "feel_happiness", "village_affinity", "can_war",
 ];
 
 fn facets(f: &Fitness) -> String {

@@ -23,6 +23,6 @@ sleep 1
 rm -f "$OUT"
 "$CHROME" --headless=new --enable-unsafe-webgpu --use-angle=metal \
   --virtual-time-budget="$WAIT" --window-size=1600,1000 --screenshot="$OUT" \
-  "http://127.0.0.1:$PORT/index.html" >/tmp/smallworld-chrome.log 2>&1 || true
+  "http://127.0.0.1:$PORT/index.html${QUERY:+?$QUERY}" >/tmp/smallworld-chrome.log 2>&1 || true
 kill "$SRV" 2>/dev/null || true
 [ -f "$OUT" ] && echo "[smallworld-shot] wrote $OUT" || { echo "[smallworld-shot] FAILED (see /tmp/smallworld-chrome.log)"; exit 1; }

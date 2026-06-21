@@ -121,6 +121,64 @@ const RESEARCH_STABILITY_PEACE: f32 = 1.0;
 /// front): a war footing starves the workshops, so progress crawls.
 const RESEARCH_STABILITY_WAR: f32 = 0.35;
 
+// --- WARFARE tunables (Civilization Sprint 2). War rides the society-evaluation
+// schedule (declarations, recalls) but BATTLES tick every frame so a clash reads in
+// motion. All war stochasticity (who musters, the strike coin-flip) draws from the
+// dedicated `war_rng`, never the main stream, so seeded worlds stay byte-identical.
+// Tuned so wars are OCCASIONAL and SURVIVABLE — they flare at a hot enemy border,
+// take a few casualties, then end in a truce; villages persist + keep advancing. ---
+/// Affinity at or below which two villages go to open WAR — set to the EXISTING `Enemy`
+/// relation threshold (−0.55), so war is exactly the spec's "when two villages are
+/// ENEMIES" condition: a border that has genuinely soured to enmity (a fought-over,
+/// death-scarred line), not a passing rivalry. A pair must cross this AND clear its
+/// war-weariness cooldown to fight. (Measured: close, balanced borders reach −0.5…−0.6
+/// under the society drift, so this fires occasionally — not never, not constantly.)
+const WAR_DECLARE_AFFINITY: f32 = -0.55;
+/// Max WARRIORS a village fields per war — bounded so the settlement is never emptied
+/// (the rest keep living/building). A handful a side reads as a skirmish, not an army.
+const WARBAND_MAX: usize = 3;
+/// A village needs at least this many living adult `can_war` minds to muster at all
+/// (so a small or depleted village does not march itself to extinction).
+const WARBAND_MIN_POOL: usize = 4;
+/// Manhattan radius at which two opposing warriors are "in melee" — a stone/bronze/iron
+/// clash lands here (adjacency-ish). Ranged eras strike from farther (below).
+const WAR_MELEE_R: i32 = 1;
+/// Manhattan range at which an INDUSTRIAL+ warrior (musket/rifle/energy) can fire on an
+/// enemy warrior — a ranged exchange opens before the lines ever close.
+const WAR_RANGED_R: i32 = 7;
+/// Per-tick probability a warrior in contact actually lands a blow / a shot connects
+/// (off `war_rng`). Kept LOW so a clash is a drawn-out, back-and-forth SKIRMISH over
+/// hundreds of ticks (a watcher can actually SEE the battle), not an instant wipe —
+/// casualties accrue slowly, leaving plenty of time to break + truce. Tuned with
+/// `WAR_HIT_DAMAGE` so ~5 connecting hits fell a fighter and a kill takes ~100+ ticks.
+const WAR_STRIKE_CHANCE: f32 = 0.018;
+/// Damage a landed melee blow / connecting shot deals. ~5 hits fell a healthy mind
+/// (health starts at 1.0), routed through the EXISTING Hurt/health/reap path so a war
+/// death is grieved by family/village exactly like any other loss. Low per-hit so a
+/// hurt-but-not-killed warrior is common (the clash reads as a struggle, not a slaughter).
+const WAR_HIT_DAMAGE: f32 = 0.22;
+/// A war ENDS when either warband is broken to this many standing fighters or fewer (a
+/// side reduced to its last fighter sues for peace) — keeps wars from grinding to
+/// extinction while still letting a real, multi-casualty battle play out first.
+const WARBAND_BROKEN_AT: usize = 1;
+/// Hard ceiling on total casualties (both sides) in a single war; on reaching it the war
+/// is force-ended to a truce — a final guarantee against a war of annihilation. A few a
+/// side, never the whole band, so both villages always persist through a war.
+const WAR_CASUALTY_CAP: u32 = 4;
+/// Max ticks a war may run before it burns out to an exhausted truce regardless of the
+/// battle's state (≈ a few society evaluations) — wars FLARE and END, never simmer forever.
+const WAR_MAX_TICKS: u64 = 1400;
+/// On truce, the warring pair's affinity is pulled back toward neutral to THIS value
+/// (war spends the enmity — a fought-out border cools to a wary peace, free to re-sour
+/// or warm again later via the normal society drift). Reuses the relation registry.
+const WAR_TRUCE_AFFINITY: f32 = -0.20;
+/// Ticks after a war before the same pair may fight again (war-weariness): a cooldown so
+/// wars are OCCASIONAL, the world recovers between them, and population can turn over.
+const WAR_COOLDOWN: u64 = 2200;
+/// While at war, a warrior steers toward the battle border each tick with this pull
+/// (its remaining motion stays its own — warriors still live, they just march to war).
+const WAR_MARCH_PULL: f32 = 0.85;
+
 /// Minimal HSV→RGB (each channel 0..255) for spreading village identity hues evenly
 /// around the colour wheel. `h,s,v` in `[0,1]`.
 fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
@@ -230,6 +288,19 @@ pub struct Agent {
     /// parent's village so lineages stay together (kinship keeps a village coherent).
     /// `None` until the live world assigns it.
     pub village: Option<u8>,
+
+    // ---- warfare (Civilization Sprint 2) — only ever set/read behind the world's
+    // `war` flag; on a non-war world these stay at their defaults and are read by
+    // nothing, so seeded worlds are byte-identical. ----
+    /// When this mind has been MUSTERED into a warband, the id of the ENEMY village
+    /// it marches against; `None` for a civilian (the default). A warrior steers
+    /// toward the contested border, fights enemy warriors there, and stands down
+    /// (back to `None`) when the war ends. Only set behind the world's `war` flag.
+    pub warband: Option<u8>,
+    /// Transient combat visual in `[0,1]`: spikes to 1.0 on a melee clash or a shot
+    /// fired/landed, decays each frame — the renderer flashes a clash spark / muzzle
+    /// flash from it. Inert (stays 0) off a war world.
+    pub weapon_flash: f32,
 }
 
 pub struct Resource {
@@ -435,6 +506,45 @@ impl Era {
     pub fn next(self) -> Option<Era> {
         Era::LADDER.get(self as usize + 1).copied()
     }
+    /// The WEAPON a warrior of this era takes up (Civilization Sprint 2). Tech drives
+    /// armament: stone clubs/spears → bronze/iron swords + shields → industrial muskets
+    /// (ranged) → space energy arms. The renderer draws the matching mesh in-hand.
+    pub fn weapon(self) -> Weapon {
+        match self {
+            Era::Stone => Weapon::Club,
+            Era::Bronze => Weapon::Sword,
+            Era::Iron => Weapon::Sword, // a sturdier blade + shield; same mesh family
+            Era::Industrial => Weapon::Musket,
+            Era::Space => Weapon::Energy,
+        }
+    }
+}
+
+/// A warrior's armament, scaled to its village's [`Era`] (Civilization Sprint 2). The
+/// melee weapons (`Club`, `Sword`) only strike in adjacency; the ranged ones (`Musket`,
+/// `Energy`) open fire across [`WAR_RANGED_R`] before the lines close. The renderer draws
+/// each as a distinct in-hand mesh (and a muzzle flash / tracer for the ranged ones).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Weapon {
+    /// Stone age: a heavy timber club (melee).
+    Club,
+    /// Bronze/Iron age: a worked-metal sword, carried with a shield (melee).
+    Sword,
+    /// Industrial age: a long musket/rifle — the first RANGED arm (muzzle flash).
+    Musket,
+    /// Space age: a sleek energy weapon — ranged (a bright bolt/tracer).
+    Energy,
+}
+
+impl Weapon {
+    /// Whether this weapon strikes at range (industrial+) rather than only in melee.
+    pub fn is_ranged(self) -> bool {
+        matches!(self, Weapon::Musket | Weapon::Energy)
+    }
+    /// The reach (Manhattan) at which this weapon can strike an enemy warrior.
+    pub fn reach(self) -> i32 {
+        if self.is_ranged() { WAR_RANGED_R } else { WAR_MELEE_R }
+    }
 }
 
 /// Cumulative research (in arbitrary "knowledge units") a village must have banked to
@@ -534,6 +644,29 @@ impl Relation {
             _ => RelationKind::Neutral,
         }
     }
+}
+
+/// An active WAR between two villages (Civilization Sprint 2). Born when a soured pair
+/// crosses [`WAR_DECLARE_AFFINITY`] (and clears its cooldown), it musters a bounded
+/// WARBAND from each side that marches to the contested border and fights; casualties
+/// route through the existing Hurt/grief path. The war ENDS — a truce — when a band is
+/// broken, the casualty cap is hit, or the clock runs out, after which the pair cools to
+/// a wary peace and a cooldown bars a rematch. Exists only on a `war`-armed world; the
+/// seeded harness never declares one, so seeded trajectories are byte-identical.
+#[derive(Clone, Debug)]
+pub struct War {
+    /// The two warring villages, `a < b` (same convention as [`Relation`]).
+    pub a: u8,
+    pub b: u8,
+    /// The contested-border battlefield (midpoint of the two village centres at
+    /// declaration) — both warbands converge here.
+    pub front: Pos,
+    /// The tick this war was declared (for the burn-out clock + the HUD).
+    pub started: u64,
+    /// Casualties so far on each side (village `a` / village `b`) — drives the
+    /// broken-band + casualty-cap end conditions and the HUD readout.
+    pub dead_a: u32,
+    pub dead_b: u32,
 }
 
 pub struct GameWorld {
@@ -699,6 +832,30 @@ pub struct GameWorld {
     /// Dedicated society RNG. ALL clustering / naming / society-jitter draws come from
     /// here so the main stream is never perturbed. Seeded when `society` is turned on.
     soc_rng: Rng,
+    /// LIVE-ONLY WARFARE switch (Civilization Sprint 2). Default `false` so every
+    /// AC/proof/fitness run is byte-identical: no warband is ever mustered, no war RNG
+    /// is drawn, and no combat damage is dealt. When `true`, a soured village pair (its
+    /// relation past [`WAR_DECLARE_AFFINITY`]) goes to open WAR — each side fields a
+    /// bounded warband that marches to the border and fights with era-appropriate
+    /// weapons; casualties route through the EXISTING Hurt/grief path, and the war ends
+    /// in a truce (band broken / casualty cap / clock) that cools the pair and starts a
+    /// cooldown. Requires `society` (wars live on village pairs). ALL war stochasticity
+    /// draws from [`war_rng`], never the main `rng`. Only the live game / war diag flip
+    /// it on.
+    pub war: bool,
+    /// Active wars, one [`War`] per fighting pair. Empty unless `war`.
+    pub wars: Vec<War>,
+    /// Per unordered village pair `(a < b)`: the tick before which that pair may NOT
+    /// go to war again (war-weariness cooldown). Indexed `a * k + b`. Empty unless `war`.
+    war_cooldowns: std::collections::HashMap<(u8, u8), u64>,
+    /// Running tallies for the war diag (live-only): wars ever declared, wars resolved
+    /// to a truce, and total battle deaths across all wars.
+    pub wars_declared: u32,
+    pub wars_resolved: u32,
+    pub war_casualties: u32,
+    /// Dedicated warfare RNG. ALL muster / strike-coin draws come from here so the main
+    /// stream is never perturbed. Seeded when `war` is turned on.
+    war_rng: Rng,
     rng: Rng,
     next_id: u32,
 }
@@ -1052,6 +1209,9 @@ impl GameWorld {
                 base_persona,
                 // unassigned until the live world calls `set_society` (clusters founders).
                 village: None,
+                // peacetime by default; only `set_war`-armed worlds ever muster a warband.
+                warband: None,
+                weapon_flash: 0.0,
             });
         }
 
@@ -1124,6 +1284,15 @@ impl GameWorld {
             // Stone, and zero era logic runs until `set_eras(true)` arms it live-only.
             eras: false,
             soc_rng: Rng::new(0),
+            // warfare: off by default (the incumbent). The flag, side-RNG, war list,
+            // cooldowns, and tallies are inert until `set_war(true)` reseeds + arms them.
+            war: false,
+            wars: Vec::new(),
+            war_cooldowns: std::collections::HashMap::new(),
+            wars_declared: 0,
+            wars_resolved: 0,
+            war_casualties: 0,
+            war_rng: Rng::new(0),
             rng,
             next_id,
         }
@@ -1449,6 +1618,303 @@ impl GameWorld {
             v.era = Era::Stone;
             v.buildings = 0;
         }
+    }
+
+    /// Arm LIVE-ONLY WARFARE (Civilization Sprint 2). Requires `society` (wars live on
+    /// village pairs). When on, a soured pair (relation past [`WAR_DECLARE_AFFINITY`])
+    /// goes to open WAR: each side musters a bounded warband of its adult `can_war`
+    /// minds, they march to the contested border and fight with era-scaled weapons, and
+    /// the war ends in a truce that cools the pair + starts a cooldown. ALL war
+    /// stochasticity draws from a dedicated, dimension-derived side-RNG, so a world that
+    /// never arms war (every harness/AC/proof path) is byte-identical. Off clears any
+    /// active wars and stands every warrior down.
+    pub fn set_war(&mut self, on: bool) {
+        self.war = on && self.society;
+        if !self.war {
+            // stand everyone down + drop any active wars (so toggling off is clean).
+            for a in &mut self.agents {
+                a.warband = None;
+                a.weapon_flash = 0.0;
+            }
+            self.wars.clear();
+            return;
+        }
+        // dedicated, dimension-derived seed so two same-sized worlds get the same wars,
+        // independent of how many main-stream draws have happened.
+        self.war_rng = Rng::new(0x0057_A12Fu64 ^ self.w as u64 ^ ((self.h as u64) << 28));
+    }
+
+    /// Step WARFARE one tick (Civilization Sprint 2). Two cadences: at each society
+    /// evaluation it DECLARES wars (a freshly-soured, off-cooldown pair musters bands)
+    /// and RECALLS bands when a war ends; every tick it runs the BATTLE (warriors march
+    /// to the front + trade blows). A no-op when `war` is off (zero draws), so non-war
+    /// worlds stay byte-identical. All randomness is off `war_rng`; casualties route
+    /// through the existing Hurt/health path so a war death is grieved like any loss.
+    fn step_warfare(&mut self) {
+        if !self.war || self.villages.len() < 2 {
+            return;
+        }
+        // --- DECLARATIONS + RECALLS run on the slow society cadence ---
+        if self.tick % SOCIETY_PERIOD == 0 {
+            self.declare_and_resolve_wars();
+        }
+        // --- the BATTLE itself ticks every frame so a clash reads in motion ---
+        self.step_battles();
+    }
+
+    /// On the society cadence: open a war for any newly-hostile, off-cooldown pair, and
+    /// close out any war whose end condition (band broken / casualty cap / clock) is met.
+    fn declare_and_resolve_wars(&mut self) {
+        // --- resolve: end wars that are broken / capped / timed-out, into a truce ---
+        let now = self.tick;
+        let mut ended: Vec<(u8, u8)> = Vec::new();
+        for war in &self.wars {
+            let band_a = self.warband_count(war.a);
+            let band_b = self.warband_count(war.b);
+            let total_dead = war.dead_a + war.dead_b;
+            let broken = band_a <= WARBAND_BROKEN_AT || band_b <= WARBAND_BROKEN_AT;
+            let capped = total_dead >= WAR_CASUALTY_CAP;
+            let timed_out = now.saturating_sub(war.started) >= WAR_MAX_TICKS;
+            if broken || capped || timed_out {
+                ended.push((war.a, war.b));
+            }
+        }
+        for (a, b) in ended {
+            self.end_war(a, b);
+        }
+
+        // --- declare: a hostile, off-cooldown pair not already at war musters bands ---
+        // gather candidate pairs first (immutable scan) to avoid borrow tangles.
+        let mut to_declare: Vec<(u8, u8)> = Vec::new();
+        for rel in &self.relations {
+            let pair = (rel.a, rel.b);
+            if rel.affinity > WAR_DECLARE_AFFINITY {
+                continue; // not soured enough for open war
+            }
+            if self.wars.iter().any(|w| w.a == pair.0 && w.b == pair.1) {
+                continue; // already fighting
+            }
+            if self.war_cooldowns.get(&pair).map(|&t| now < t).unwrap_or(false) {
+                continue; // still war-weary from a recent war
+            }
+            // both sides must have a deep enough pool of adult fighters to muster.
+            if self.fighter_pool(pair.0) < WARBAND_MIN_POOL
+                || self.fighter_pool(pair.1) < WARBAND_MIN_POOL
+            {
+                continue;
+            }
+            to_declare.push(pair);
+        }
+        for (a, b) in to_declare {
+            self.declare_war(a, b);
+        }
+    }
+
+    /// Count this village's living adult minds that *can* bear arms (the muster pool).
+    fn fighter_pool(&self, v: u8) -> usize {
+        self.agents
+            .iter()
+            .filter(|a| {
+                a.alive
+                    && a.maturity >= 0.95
+                    && a.mind.can_war()
+                    && a.village == Some(v)
+            })
+            .count()
+    }
+
+    /// Public read-only view of a village's standing warband size (for the HUD / diag).
+    pub fn warband_size(&self, v: u8) -> usize {
+        self.warband_count(v)
+    }
+
+    /// Count this village's still-standing (living) warriors in the CURRENT war.
+    fn warband_count(&self, v: u8) -> usize {
+        self.agents
+            .iter()
+            .filter(|a| a.alive && a.village == Some(v) && a.warband.is_some())
+            .count()
+    }
+
+    /// Open a WAR between villages `a` and `b`: record it, muster a bounded warband from
+    /// each side (the nearest-to-the-front adults, so they have least distance to march),
+    /// and tag those minds with the enemy id. The rest of each village keeps living.
+    fn declare_war(&mut self, a: u8, b: u8) {
+        let (a, b) = (a.min(b), a.max(b));
+        let ca = self.villages.get(a as usize).map(|v| v.center);
+        let cb = self.villages.get(b as usize).map(|v| v.center);
+        let (Some(ca), Some(cb)) = (ca, cb) else { return };
+        let front = Pos::new((ca.x + cb.x) / 2, (ca.y + cb.y) / 2);
+        self.muster_warband(a, b, front); // a's band marches against b
+        self.muster_warband(b, a, front); // b's band marches against a
+        self.wars.push(War { a, b, front, started: self.tick, dead_a: 0, dead_b: 0 });
+        self.wars_declared += 1;
+    }
+
+    /// Pick up to [`WARBAND_MAX`] of village `v`'s adult `can_war` minds — the ones
+    /// nearest the front (least to march) — and conscript them to fight `enemy` (stored
+    /// on `warband` so they march to the right front + the renderer reads who they fight).
+    /// A small jitter off `war_rng` breaks ties so the same band is not always picked.
+    fn muster_warband(&mut self, v: u8, enemy: u8, front: Pos) {
+        // rank candidates by distance to the front (closest first), with a tiny
+        // side-RNG jitter so musters vary between wars without touching the main stream.
+        let mut cands: Vec<(usize, i64)> = Vec::new();
+        for (i, a) in self.agents.iter().enumerate() {
+            if a.alive && a.maturity >= 0.95 && a.mind.can_war() && a.village == Some(v) {
+                let jitter = (self.war_rng.below(3) as i64) - 1; // -1,0,+1
+                cands.push((i, a.body.pos.manhattan(front) as i64 + jitter));
+            }
+        }
+        cands.sort_by_key(|&(_, d)| d);
+        for &(i, _) in cands.iter().take(WARBAND_MAX) {
+            self.agents[i].warband = Some(enemy);
+        }
+    }
+
+    /// End a WAR between `a` and `b` (truce): stand both bands down, cool the relation to
+    /// a wary peace, start the war-weariness cooldown, and tally it. Reuses the relation
+    /// registry so the pair is free to re-sour or warm again via the normal drift.
+    fn end_war(&mut self, a: u8, b: u8) {
+        let (a, b) = (a.min(b), a.max(b));
+        // stand down every warrior of either village.
+        for ag in &mut self.agents {
+            if (ag.village == Some(a) || ag.village == Some(b)) && ag.warband.is_some() {
+                ag.warband = None;
+                ag.weapon_flash = 0.0;
+            }
+        }
+        // cool the relation toward a wary peace (war spends the enmity).
+        if let Some(rel) = self.relations.iter_mut().find(|r| r.a == a && r.b == b) {
+            // pull toward the truce affinity (don't slam — leave it wary, free to drift).
+            rel.affinity = rel.affinity + (WAR_TRUCE_AFFINITY - rel.affinity) * 0.85;
+        }
+        self.war_cooldowns.insert((a, b), self.tick + WAR_COOLDOWN);
+        self.wars.retain(|w| !(w.a == a && w.b == b));
+        self.wars_resolved += 1;
+    }
+
+    /// Run every active war's BATTLE for one tick: each warrior marches to its war's
+    /// front, and any warrior within weapon reach of an enemy warrior may land a blow
+    /// (off `war_rng`). A felled warrior takes lethal damage through the EXISTING Hurt /
+    /// health path (cause "the war") so `reap_dead` grieves it like any loss. Casualty
+    /// tallies feed the end conditions; weapon flashes drive the renderer's clash/muzzle.
+    fn step_battles(&mut self) {
+        // decay weapon flashes (renderer reads these; purely cosmetic).
+        for a in &mut self.agents {
+            if a.weapon_flash > 0.0 {
+                a.weapon_flash = (a.weapon_flash - 0.12).max(0.0);
+            }
+        }
+        if self.wars.is_empty() {
+            return;
+        }
+        // snapshot the wars (front + the two sides) so we can scan agents immutably
+        // while mutating their health in a second pass.
+        let wars: Vec<War> = self.wars.clone();
+        // resolve strikes: collect (victim_index, attacker_id) so we apply damage after.
+        let mut hits: Vec<(usize, EntityId, u8)> = Vec::new(); // (victim, attacker, victim_village)
+        for war in &wars {
+            // indices of each side's standing warriors.
+            let side_a: Vec<usize> = self
+                .agents
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| a.alive && a.village == Some(war.a) && a.warband.is_some())
+                .map(|(i, _)| i)
+                .collect();
+            let side_b: Vec<usize> = self
+                .agents
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| a.alive && a.village == Some(war.b) && a.warband.is_some())
+                .map(|(i, _)| i)
+                .collect();
+            if side_a.is_empty() || side_b.is_empty() {
+                continue;
+            }
+            let weapon_a = self.villages.get(war.a as usize).map(|v| v.era.weapon());
+            let weapon_b = self.villages.get(war.b as usize).map(|v| v.era.weapon());
+            // each A warrior may strike its nearest B warrior in reach, and vice-versa.
+            for &i in &side_a {
+                if let Some((j, _)) = self.nearest_in_reach(i, &side_b, weapon_a) {
+                    if self.war_rng.chance(WAR_STRIKE_CHANCE) {
+                        hits.push((j, self.agents[i].id, war.b));
+                    }
+                    self.agents[i].weapon_flash = 1.0;
+                }
+            }
+            for &j in &side_b {
+                if let Some((i, _)) = self.nearest_in_reach(j, &side_a, weapon_b) {
+                    if self.war_rng.chance(WAR_STRIKE_CHANCE) {
+                        hits.push((i, self.agents[j].id, war.a));
+                    }
+                    self.agents[j].weapon_flash = 1.0;
+                }
+            }
+        }
+        // apply damage through the existing Hurt/health path so a kill is grieved.
+        for (victim, attacker, victim_village) in hits {
+            let died = {
+                let a = &mut self.agents[victim];
+                if !a.alive {
+                    continue;
+                }
+                let floor = if a.mind.can_die() { 0.0 } else { 0.05 };
+                let before = a.body.health;
+                a.body.health = (a.body.health - WAR_HIT_DAMAGE).max(floor);
+                a.death_cause = "the war";
+                a.inbox.push(WorldEvent::Hurt { id: attacker, health: WAR_HIT_DAMAGE });
+                a.flash = 1.0;
+                a.weapon_flash = 1.0;
+                before > 0.0 && a.body.health <= 0.0 && a.mind.can_die()
+            };
+            if died {
+                // tally the casualty on the right side of the right war (for the end
+                // conditions + the diag); reap_dead broadcasts the Died event for grief.
+                self.war_casualties += 1;
+                for war in &mut self.wars {
+                    if war.a == victim_village {
+                        war.dead_a += 1;
+                    } else if war.b == victim_village {
+                        war.dead_b += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The contested FRONT this warrior should march to: the active war between its
+    /// village and the enemy it was mustered against. `None` if it is not mustered or its
+    /// war has already ended (so it stops marching and stands down on the next recall).
+    fn war_front_for(&self, i: usize) -> Option<Pos> {
+        let me = &self.agents[i];
+        let v = me.village?;
+        let enemy = me.warband?;
+        let (lo, hi) = (v.min(enemy), v.max(enemy));
+        self.wars.iter().find(|w| w.a == lo && w.b == hi).map(|w| w.front)
+    }
+
+    /// The nearest enemy-warrior index (and distance) within this warrior's weapon
+    /// reach, or `None`. Melee weapons only reach adjacency; ranged ones reach farther.
+    fn nearest_in_reach(
+        &self,
+        i: usize,
+        enemies: &[usize],
+        weapon: Option<Weapon>,
+    ) -> Option<(usize, i32)> {
+        let reach = weapon.map(|w| w.reach()).unwrap_or(WAR_MELEE_R);
+        let here = self.agents[i].body.pos;
+        let mut best: Option<(usize, i32)> = None;
+        for &j in enemies {
+            if !self.agents[j].alive {
+                continue;
+            }
+            let d = self.agents[j].body.pos.manhattan(here);
+            if d <= reach && best.map(|(_, b)| d < b).unwrap_or(true) {
+                best = Some((j, d));
+            }
+        }
+        best
     }
 
     /// Accumulate RESEARCH for every village and re-derive its era (Civilization
@@ -2256,6 +2722,9 @@ impl GameWorld {
             genome: child_genome,
             base_persona: child_persona,
             village,
+            // a newborn is a civilian; it can only be mustered once grown to an adult.
+            warband: None,
+            weapon_flash: 0.0,
         });
         self.births += 1;
     }
@@ -2849,13 +3318,31 @@ impl GameWorld {
                             dir = b;
                         }
                     }
+                    // WAR MARCH (live-only, gated by `war` + this mind being MUSTERED):
+                    // a conscripted warrior overrides peacetime avoidance and steers
+                    // toward its war's contested FRONT to give battle. Once at the front
+                    // it engages the nearest enemy warrior (handled in `step_battles`).
+                    // Inert off a war world (no warbands), so seeded worlds are
+                    // byte-identical. The pull is partial (`WAR_MARCH_PULL`), so warriors
+                    // still otherwise behave — they march, they don't teleport.
+                    let mut marched = false;
+                    if self.war && self.agents[i].warband.is_some() {
+                        if let Some(front) = self.war_front_for(i) {
+                            if me.pos != front && self.war_rng.chance(WAR_MARCH_PULL) {
+                                dir = me.pos.toward(front);
+                                marched = true;
+                            }
+                        }
+                    }
                     // SOCIETY WARINESS (live-only, gated by the village_affinity gene +
                     // a hostile inter-village relation): a mind keeps its distance from
                     // an ENEMY/RIVAL village's members. If the chosen step would carry
                     // it CLOSER to a nearby wary mind, deflect to whichever neighbour
                     // step keeps it farthest from that mind — a low-grade avoidance, not
                     // a war. Deterministic (no RNG) and inert off a society world, so
-                    // every seeded harness trajectory is byte-identical.
+                    // every seeded harness trajectory is byte-identical. A MUSTERED
+                    // warrior skips this — it is marching to battle, not avoiding the foe.
+                    if !marched {
                     if let Some(wp) = self.nearest_wary(i) {
                         let here = me.pos;
                         if self.clamp(here.step(dir)).manhattan(wp) < here.manhattan(wp) {
@@ -2876,6 +3363,7 @@ impl GameWorld {
                             }
                         }
                     }
+                    } // end !marched (warriors skip peacetime avoidance)
                     let np = self.clamp(me.pos.step(dir));
                     // Walls are solid: an agent cannot step into a wall cell (so a
                     // fully-walled agent has shut itself in). `walls` is empty unless
@@ -3189,6 +3677,16 @@ impl GameWorld {
         // when `society` is off, so every seeded harness trajectory is byte-identical.
         if self.society {
             self.step_society();
+        }
+        // WARFARE (live-only): declare wars for freshly-soured pairs, run the battles
+        // (warriors trade blows at the border), and resolve to a truce when a band
+        // breaks / the casualty cap is hit / the clock runs out. Casualties route
+        // through the EXISTING Hurt/grief path, so a war death is grieved like any loss;
+        // then reap_dead collects the fallen. A no-op when `war` is off (zero draws), so
+        // every seeded harness trajectory is byte-identical. Requires `society`.
+        if self.war {
+            self.step_warfare();
+            self.reap_dead();
         }
         // pheromone evaporates so worn paths reflect *recent* success and fade as
         // routes go stale (no RNG; a no-op when the field is all zero).
@@ -4487,5 +4985,129 @@ mod tests {
             assert_eq!(x.body.pos, y.body.pos);
             assert_eq!(x.village, y.village);
         }
+    }
+
+    // ---- WARFARE (Civilization Sprint 2) ----
+
+    /// The live showcase world with WARFARE armed (can_war gene + set_war), at a chosen
+    /// seed. Seed 2 is verified to declare + resolve a survivable war while the world
+    /// thrives; seed 0x61 (the default showcase) stays at peace (villages spread apart).
+    fn live_war_world(seed: u64, n_villages: usize) -> GameWorld {
+        let mut g = daimon_mind::Genome::showcase();
+        for i in [21, 22, 23, 24, 29, 30, 31, 32, 33, 34] {
+            g.g[i] = 1.0;
+        }
+        let mut w = GameWorld::with_genome_sized(seed, 64, &g, 124, 84, 7);
+        w.soften_stalker();
+        w.set_materials_world(true);
+        w.set_wildlife(true);
+        w.set_lifecycle(true, 90);
+        w.set_society(true, n_villages);
+        w.set_eras(true);
+        w.set_war(true);
+        w
+    }
+
+    #[test]
+    fn war_off_world_is_byte_identical() {
+        // A world that never calls `set_war` must be byte-identical to the incumbent: no
+        // wars, no warbands, no war RNG, no combat damage. The can_war gene is off in BOTH
+        // presets, so even arming the live flag on a non-war world leaves the seeded
+        // trajectory untouched.
+        let mut w = GameWorld::new(0xDA13, 6);
+        for _ in 0..1500 {
+            w.step();
+        }
+        assert!(!w.war);
+        assert!(w.wars.is_empty());
+        assert!(w.agents.iter().all(|a| a.warband.is_none()));
+        assert_eq!(w.wars_declared, 0);
+        assert_eq!(w.war_casualties, 0);
+        // determinism: two non-war worlds stay identical step-for-step.
+        let mut a = GameWorld::new(11, 4);
+        let mut b = GameWorld::new(11, 4);
+        for _ in 0..400 {
+            a.step();
+            b.step();
+        }
+        for (x, y) in a.agents.iter().zip(b.agents.iter()) {
+            assert_eq!(x.body.pos, y.body.pos);
+            assert_eq!(x.warband, y.warband);
+        }
+    }
+
+    #[test]
+    fn war_is_deterministic() {
+        // Same seed + same flags ⇒ identical war history (declarations, casualties, the
+        // standing of every relation), so warfare never perturbs reproducibility.
+        let mut a = live_war_world(0x2, 4);
+        let mut b = live_war_world(0x2, 4);
+        for _ in 0..13000 {
+            a.step();
+            b.step();
+        }
+        assert_eq!(a.wars_declared, b.wars_declared);
+        assert_eq!(a.wars_resolved, b.wars_resolved);
+        assert_eq!(a.war_casualties, b.war_casualties);
+        assert_eq!(a.living_count(), b.living_count());
+        for (x, y) in a.relations.iter().zip(b.relations.iter()) {
+            assert_eq!(x.affinity.to_bits(), y.affinity.to_bits());
+        }
+        for (x, y) in a.agents.iter().zip(b.agents.iter()) {
+            assert_eq!(x.body.pos, y.body.pos);
+            assert_eq!(x.warband, y.warband);
+        }
+    }
+
+    #[test]
+    fn war_flares_resolves_and_world_survives() {
+        // At a border-contested seed, an emergent WAR must: be declared (a soured pair
+        // crosses enmity), field bounded warbands, take a few casualties, then RESOLVE to
+        // a truce — and the world must SURVIVE (it is a skirmish, not extinction): both
+        // villages persist and the population keeps turning over.
+        let mut w = live_war_world(0x2, 4);
+        let mut saw_warband = false;
+        let mut peak_band = 0usize;
+        for _ in 0..14000 {
+            w.step();
+            let band = w.agents.iter().filter(|a| a.alive && a.warband.is_some()).count();
+            if band > 0 {
+                saw_warband = true;
+            }
+            peak_band = peak_band.max(band);
+        }
+        assert!(w.wars_declared >= 1, "an emergent war was declared");
+        assert!(saw_warband, "a warband was actually mustered and stood in the field");
+        // warbands are BOUNDED (a few a side) — the village is never emptied.
+        assert!(peak_band <= WARBAND_MAX * 2, "warbands bounded ({peak_band} fielded)");
+        assert!(w.war_casualties >= 1, "the battle drew real blood (casualties routed through the grief path)");
+        // SURVIVABLE: casualties are capped, the world lives on, villages persist.
+        assert!(w.war_casualties <= WAR_CASUALTY_CAP, "casualties capped (no annihilation)");
+        assert!(w.wars_resolved >= 1, "the war ENDED in a truce (it did not grind forever)");
+        assert!(w.wars.is_empty() || w.wars_declared > w.wars_resolved, "no orphan war state");
+        assert!(w.living_count() > 30, "world survived the war(s) ({} alive)", w.living_count());
+        assert!(
+            w.villages.iter().filter(|v| v.population > 0).count() >= 2,
+            "both sides persist through the war"
+        );
+    }
+
+    #[test]
+    fn war_truce_cools_the_relation_and_arms_a_cooldown() {
+        // After a war resolves, the warring pair is cooled toward a wary peace (not left
+        // pinned at enmity) and a cooldown bars an immediate rematch — so wars are
+        // OCCASIONAL, the world recovers between them.
+        let mut w = live_war_world(0x2, 4);
+        for _ in 0..13000 {
+            w.step();
+        }
+        // by now seed-2's one war (t≈12360→12540) has resolved.
+        assert!(w.wars_resolved >= 1);
+        // every relation sits above full enmity right after a truce (cooled), and no
+        // war is currently active for a just-resolved pair (the cooldown holds).
+        assert!(
+            w.relations.iter().all(|r| r.affinity > -0.85 || w.wars.iter().any(|x| x.a == r.a && x.b == r.b)),
+            "a fought-out border cooled below the rail after truce"
+        );
     }
 }

@@ -65,7 +65,9 @@ pub struct Renderer {
     water_vbuf: wgpu::Buffer,
     water_len: u32,
     dyn_lit: wgpu::Buffer,
+    dyn_lit_cap: usize,
     add_vbuf: wgpu::Buffer,
+    add_cap: usize,
     // --- low-res RT + nearest blit ---
     rt_view: wgpu::TextureView,
     rt_depth: wgpu::TextureView,
@@ -407,7 +409,9 @@ impl Renderer {
             water_vbuf,
             water_len,
             dyn_lit,
+            dyn_lit_cap: MAX_DYN_LIT,
             add_vbuf,
+            add_cap: MAX_ADD,
             rt_view,
             rt_depth,
             rt_size,
@@ -498,11 +502,35 @@ impl Renderer {
         };
         queue.write_buffer(&self.world_uniform, 0, bytemuck::bytes_of(&wu));
 
-        let lit_n = scene.lit.len().min(MAX_DYN_LIT);
+        // GROW-ON-DEMAND: a living world accumulates geometry without bound (permanent
+        // grave-cairns, more villagers, buildings that grow with the era). A fixed cap
+        // would silently TRUNCATE the overflow — and since the villager bodies are
+        // pushed last, *they* are what vanishes once the world fills up. So instead of
+        // clamping to a cap we grow the vertex buffer (1.5×, next 4k boundary) whenever
+        // the scene outgrows it, and upload the WHOLE scene. Nothing is ever dropped.
+        let lit_n = scene.lit.len();
+        if lit_n > self.dyn_lit_cap {
+            self.dyn_lit_cap = ((lit_n * 3 / 2) + 4095) & !4095;
+            self.dyn_lit = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("dyn-lit"),
+                size: (self.dyn_lit_cap * std::mem::size_of::<LitVertex>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
         if lit_n > 0 {
             queue.write_buffer(&self.dyn_lit, 0, bytemuck::cast_slice(&scene.lit[..lit_n]));
         }
-        let add_n = scene.add.len().min(MAX_ADD);
+        let add_n = scene.add.len();
+        if add_n > self.add_cap {
+            self.add_cap = ((add_n * 3 / 2) + 4095) & !4095;
+            self.add_vbuf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("add"),
+                size: (self.add_cap * std::mem::size_of::<AddVertex>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
         if add_n > 0 {
             queue.write_buffer(&self.add_vbuf, 0, bytemuck::cast_slice(&scene.add[..add_n]));
         }

@@ -46,6 +46,7 @@ const GENE_NAMES: [&str; N_GENES] = [
     "can_age",
     "feel_happiness",
     "village_affinity",
+    "can_war",
 ];
 
 fn show(label: &str, f: &Fitness) {

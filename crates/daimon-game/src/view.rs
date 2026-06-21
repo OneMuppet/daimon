@@ -376,6 +376,75 @@ pub fn build_with(
     // world, so a non-society render is the exact incumbent scene.
     if world.society {
         use crate::sim::RelationKind;
+        // TERRITORY (faction control): each village claims a soft coloured ground-zone in
+        // its banner hue, sized by how far its living members range from the centre — so a
+        // glance shows WHO CONTROLS WHERE, and where two zones overlap reads as a contested
+        // frontier. Drawn first (lowest) as additive ground-glow, so it tints the land
+        // without ever occluding the minds, buildings, or wildlife standing on it.
+        let nv = world.villages.len();
+        let mut reach = vec![0.0f32; nv];
+        for a in &world.agents {
+            if !a.alive {
+                continue;
+            }
+            if let Some(vid) = a.village {
+                let v = &world.villages[vid as usize];
+                let d = (a.rx - v.center.x as f32).hypot(a.ry - v.center.y as f32);
+                let i = vid as usize;
+                reach[i] = reach[i].max(d.min(40.0));
+            }
+        }
+        for v in &world.villages {
+            if v.population == 0 {
+                continue;
+            }
+            let i = v.id as usize;
+            let r = reach[i].max(7.0) + 3.0; // a generous margin past the outermost member
+            let (cx, cz) = (v.center.x as f32, v.center.y as f32);
+            let pulse = 0.55 + 0.45 * (time * 0.7 + v.id as f32 * 1.7).sin();
+            // a flat ALPHA-BLENDED ground wash in the banner colour marks the claimed land
+            // — finely TESSELLATED (rings × segments, height sampled per vertex + a small
+            // lift) so it hugs the bumpy terrain instead of getting buried under it, and
+            // additive glow just blows out on sunlit grass. Drawn here (before buildings /
+            // minds) so figures on it render on top; overlapping washes read as a contested
+            // frontier. Alpha eases out toward the rim for a soft edge.
+            let segs = 36u32;
+            let rings = 5u32;
+            for ri in 0..rings {
+                let f0 = ri as f32 / rings as f32;
+                let f1 = (ri + 1) as f32 / rings as f32;
+                let (r0, r1) = (r * f0, r * f1);
+                let a_in = 0.52 * (1.0 - f0 * 0.6);
+                let a_out = 0.52 * (1.0 - f1 * 0.6);
+                let c_in = Color::hex(v.hue, a_in).0;
+                let c_out = Color::hex(v.hue, a_out).0;
+                for k in 0..segs {
+                    let a0 = k as f32 / segs as f32 * std::f32::consts::TAU;
+                    let a1 = (k + 1) as f32 / segs as f32 * std::f32::consts::TAU;
+                    let p = |rr: f32, an: f32| {
+                        let (x, z) = (cx + an.cos() * rr, cz + an.sin() * rr);
+                        [x, g(x, z) + 0.12, z]
+                    };
+                    // inner edge uses c_in, outer edge c_out (push_tri is flat-shaded, so
+                    // the per-ring step gives a gentle radial fade overall).
+                    geo::push_tri(&mut s.lit, p(r0, a0), p(r1, a0), p(r1, a1), c_out);
+                    geo::push_tri(&mut s.lit, p(r0, a0), p(r1, a1), p(r0, a1), c_in);
+                }
+            }
+            // a bold, bright BORDER ring of motes around the territory edge — the clearest
+            // "this land is theirs" signal, drawn as billboards above the ground so it is
+            // never occluded by terrain; where two villages' rings overlap, the border
+            // reads as a contested frontier. A double row makes a thick, legible band.
+            let bsegs = segs * 3;
+            for k in 0..bsegs {
+                let ang = k as f32 / bsegs as f32 * std::f32::consts::TAU;
+                for rr in [r, r - 0.6] {
+                    let bx = cx + ang.cos() * rr;
+                    let bz = cz + ang.sin() * rr;
+                    glow(&mut s, [bx, g(bx, bz) + 0.22, bz], 0.8, Color::hex(v.hue, 0.85 * pulse));
+                }
+            }
+        }
         // relation links first (drawn low, so banners sit on top).
         for r in &world.relations {
             let (va, vb) = (&world.villages[r.a as usize], &world.villages[r.b as usize]);
@@ -742,6 +811,47 @@ pub fn build_with(
             accent.0,
             Color::hex(0xf0d9b8, 1.0).0,
         );
+
+        // WARFARE (live-only): a mustered WARRIOR carries an era-appropriate weapon in
+        // hand and wears a hostile red battle aura; on a clash / shot its weapon_flash
+        // spikes and the renderer pops a clash spark (melee) or a muzzle flash + tracer
+        // (ranged). Drawn only for minds the world reports as warriors, so peacetime /
+        // non-war views draw nothing extra. The weapon scales with the village's era.
+        if world.war && a.warband.is_some() {
+            if let Some(v) = world.village_of(i) {
+                let weapon = v.era.weapon();
+                let code: u8 = match weapon {
+                    crate::sim::Weapon::Club => 0,
+                    crate::sim::Weapon::Sword => 1,
+                    crate::sim::Weapon::Musket => 2,
+                    crate::sim::Weapon::Energy => 3,
+                };
+                geo::push_weapon(&mut s.lit, x, gy + idle_bob * sc, z, heading, sc, phase, stride, code);
+                // a low, hostile red aura marks this mind as AT WAR (distinct from the
+                // drive halo) — a warband reads as a red-lit cluster marching the border.
+                glow(&mut s, [x, gy + 0.5 * sc, z], 1.1 * sc, Color::hex(0xff4534, 0.20));
+                // the BATTLE flash: a clash spark (melee) or muzzle flash + tracer (ranged).
+                if a.weapon_flash > 0.02 {
+                    let f = a.weapon_flash;
+                    let muzzle = geo::weapon_muzzle(x, gy + idle_bob * sc, z, heading, sc, weapon.is_ranged());
+                    if weapon.is_ranged() {
+                        // bright muzzle flash + a short hot tracer streaking forward.
+                        glow(&mut s, muzzle, (0.42 + 0.25 * f) * sc, Color::hex(0xffe39a, 0.95 * f));
+                        glow(&mut s, muzzle, 0.18 * sc, Color::hex(0xffffff, 0.9 * f));
+                        let (sh, ch) = heading.sin_cos();
+                        for k in 1..=4 {
+                            let d = k as f32 * 0.6 * sc;
+                            let tp = [muzzle[0] + d * ch, muzzle[1], muzzle[2] + d * sh];
+                            glow(&mut s, tp, 0.10 * sc, Color::hex(0xfff2c0, 0.5 * f * (1.0 - k as f32 / 5.0)));
+                        }
+                    } else {
+                        // a sharp metallic clash spark at the weapon, white-hot core.
+                        glow(&mut s, muzzle, (0.35 + 0.3 * f) * sc, Color::hex(0xffd14a, 0.9 * f));
+                        glow(&mut s, muzzle, 0.16 * sc, Color::hex(0xffffff, 0.85 * f));
+                    }
+                }
+            }
+        }
 
         // THE GLOW — each mind still glows, but now it is a CHARACTER that glows
         // rather than a featureless orb: the aura BACKLIGHTS the little figure and a
@@ -1809,6 +1919,115 @@ fn inspector(s: &mut Scene, world: &GameWorld, selected: Option<usize>, sw: f32,
                 Color::hex(0xff8a8a, 0.95),
             );
         }
+        // FACTIONS first (society mode), so the countries' stats sit at the TOP of the
+        // panel rather than below the long inhabitant roster; the per-mind list follows.
+        // FACTIONS (society + civ): one entry per living village — its banner, name and
+        // era with a research-progress bar, then a stats sub-line (population · buildings
+        // · standing with its neighbours, and ⚔ if it is at war) — so each settlement
+        // reads as a country with a legible size, tech level and diplomatic posture, and
+        // you can SEE which has advanced or is fighting. Off a society world, skipped.
+        if world.society && !world.villages.is_empty() {
+            use crate::sim::{Era, RelationKind, ERA_THRESHOLDS};
+            yy += 10.0;
+            s.text("FACTIONS", px + 18.0, yy, 11.0, Color::hex(CORAL, 1.0));
+            yy += 18.0;
+            for v in &world.villages {
+                if v.population == 0 {
+                    continue;
+                }
+                let at_war = world.war && world.wars.iter().any(|w| w.a == v.id || w.b == v.id);
+                s.orb(px + 24.0, yy + 6.0, 5.0, 0.8, Color::hex(v.hue, 1.0));
+                let title = if world.eras {
+                    format!("{}  ·  {}", v.name, v.era.name())
+                } else {
+                    v.name.clone()
+                };
+                s.text(title, px + 36.0, yy, 11.5, Color::hex(PAPER, 0.92));
+                if world.eras {
+                    let cur = v.era as usize;
+                    let frac = if matches!(v.era, Era::Space) {
+                        1.0
+                    } else {
+                        let (lo, hi) = (ERA_THRESHOLDS[cur], ERA_THRESHOLDS[cur + 1]);
+                        ((v.research - lo) / (hi - lo)).clamp(0.0, 1.0)
+                    };
+                    bar(s, px + pw - 92.0, yy + 5.0, 74.0, frac, Color::hex(0xffc24e, 1.0));
+                }
+                yy += 17.0;
+                // diplomatic posture: count this village's standing with living neighbours.
+                let mut allies = 0u32;
+                let mut foes = 0u32;
+                for r in &world.relations {
+                    let other = if r.a == v.id {
+                        Some(r.b)
+                    } else if r.b == v.id {
+                        Some(r.a)
+                    } else {
+                        None
+                    };
+                    if let Some(o) = other {
+                        if world.villages[o as usize].population == 0 {
+                            continue;
+                        }
+                        match r.kind() {
+                            RelationKind::Allied | RelationKind::Friendly => allies += 1,
+                            RelationKind::Enemy | RelationKind::Rival => foes += 1,
+                            RelationKind::Neutral => {}
+                        }
+                    }
+                }
+                let mut stat = format!("pop {} · {} bld", v.population, v.buildings);
+                if allies > 0 {
+                    stat.push_str(&format!(" · {allies} ally"));
+                }
+                if foes > 0 {
+                    stat.push_str(&format!(" · {foes} rival"));
+                }
+                let (extra, scol) = if at_war {
+                    (" · ⚔ at war".to_string(), 0xff4534u32)
+                } else {
+                    (String::new(), MUTED)
+                };
+                s.text(format!("{stat}{extra}"), px + 36.0, yy, 10.5, Color::hex(scol, 0.9));
+                yy += 19.0;
+            }
+        }
+        // AT WAR (Civilization Sprint 2): list every active war — the two settlements,
+        // their warband sizes, and casualties so far — so a watcher can SEE which
+        // villages are fighting. Off a war world (or in peacetime), this whole block
+        // is skipped, so it only ever appears when a war is genuinely on.
+        if world.war && !world.wars.is_empty() {
+            yy += 10.0;
+            s.text("AT WAR", px + 18.0, yy, 11.0, Color::hex(0xff4534, 1.0));
+            yy += 18.0;
+            for w in &world.wars {
+                let (na, nb) = (&world.villages[w.a as usize].name, &world.villages[w.b as usize].name);
+                let (ba, bb) = (world.warband_size(w.a), world.warband_size(w.b));
+                s.orb(px + 24.0, yy + 6.0, 5.0, 0.9, Color::hex(0xff4534, 1.0));
+                s.text(
+                    format!("{na} ⚔ {nb}"),
+                    px + 36.0,
+                    yy,
+                    11.5,
+                    Color::hex(0xffb0a4, 0.95),
+                );
+                yy += 16.0;
+                s.text(
+                    format!("warband {ba} vs {bb}  ·  fallen {}", w.dead_a + w.dead_b),
+                    px + 36.0,
+                    yy,
+                    10.5,
+                    Color::hex(MUTED, 0.85),
+                );
+                yy += 20.0;
+            }
+        }
+        // INHABITANTS: the full roster of minds (living + lost), each clickable to open.
+        yy += 10.0;
+        if world.society {
+            s.text("INHABITANTS", px + 18.0, yy, 11.0, Color::hex(CORAL, 1.0));
+            yy += 18.0;
+        }
         for a in &world.agents {
             if a.alive {
                 s.orb(px + 26.0, yy + 7.0, 6.0, 0.6, Color::hex(a.accent, 1.0));
@@ -1819,31 +2038,6 @@ fn inspector(s: &mut Scene, world: &GameWorld, selected: Option<usize>, sw: f32,
                 s.text(format!("{}  ·  lost", a.name), px + 40.0, yy, 13.0, Color::hex(MUTED, 0.7));
             }
             yy += 24.0;
-        }
-        // TECH ERAS (Civilization Sprint 1): one line per living village — its banner,
-        // name, era and research bar — so the world's tech state is legible at a glance
-        // and you can SEE which settlement has advanced. Off an eras world, skipped.
-        if world.eras && !world.villages.is_empty() {
-            use crate::sim::{Era, ERA_THRESHOLDS};
-            yy += 10.0;
-            s.text("TECH ERAS", px + 18.0, yy, 11.0, Color::hex(CORAL, 1.0));
-            yy += 18.0;
-            for v in &world.villages {
-                if v.population == 0 {
-                    continue;
-                }
-                s.orb(px + 24.0, yy + 6.0, 5.0, 0.8, Color::hex(v.hue, 1.0));
-                s.text(format!("{}  ·  {}", v.name, v.era.name()), px + 36.0, yy, 11.5, Color::hex(PAPER, 0.92));
-                let cur = v.era as usize;
-                let frac = if matches!(v.era, Era::Space) {
-                    1.0
-                } else {
-                    let (lo, hi) = (ERA_THRESHOLDS[cur], ERA_THRESHOLDS[cur + 1]);
-                    ((v.research - lo) / (hi - lo)).clamp(0.0, 1.0)
-                };
-                bar(s, px + pw - 92.0, yy + 5.0, 74.0, frac, Color::hex(0xffc24e, 1.0));
-                yy += 20.0;
-            }
         }
         yy += 10.0;
         s.text("WHAT'S RUNNING", px + 18.0, yy, 11.0, Color::hex(CORAL, 1.0));

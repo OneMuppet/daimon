@@ -101,6 +101,11 @@ impl Game {
         // and rivalries. Like the others, flipped on a clone of showcase; the preset
         // itself stays bit-identical (g[33]=0) so every AC/proof/fitness run is unchanged.
         genome.g[33] = 1.0; // village_affinity on — feel a settlement identity, be wary of enemies
+        // WARFARE on for the live game (Civilization Sprint 2): a village's adult minds
+        // may be mustered into a warband when their settlement goes to WAR with an enemy.
+        // Like the others, flipped on a clone of showcase; the preset itself stays
+        // bit-identical (g[34]=0) so every AC/proof/fitness run is unchanged.
+        genome.g[34] = 1.0; // can_war on — take up arms for the village in war
         // Seed 0x61 was chosen (from a sweep) for the believable mortality arc: with
         // the softened stalker, the village bonds and persists, then ~2 minutes in
         // loses one bonded member to the stalker — whom the survivors genuinely
@@ -113,7 +118,16 @@ impl Game {
         const VILLAGE_POP: usize = 64;
         const VILLAGE_W: i32 = 124;
         const VILLAGE_H: i32 = 84;
-        let mut world = GameWorld::with_genome_sized(0x61, VILLAGE_POP, &genome, VILLAGE_W, VILLAGE_H, 7);
+        // Default seed 0x61 (the tuned mortality-arc showcase). Optional `DAIMON_SEED`
+        // env override (live-only — the harness builds `GameWorld` directly and never
+        // reads this) lets a watcher run the showcase at a different world: e.g. a
+        // border-contested seed where the EMERGENT WARFARE flares so a war can be SEEN
+        // (seed 1 is verified to declare + resolve a survivable war while the world
+        // thrives). Whether a war ever breaks out is emergent and geometry-dependent —
+        // 0x61's four villages spread far apart and stay at peace, so war shows there
+        // only rarely; a contested-border seed demonstrates the feature reliably.
+        let seed = showcase_seed();
+        let mut world = GameWorld::with_genome_sized(seed, VILLAGE_POP, &genome, VILLAGE_W, VILLAGE_H, 7);
         // PERPETUAL GROWING SEASON for the big showcase. The seasonal year's winter
         // halts food and relies on a single central granary the village stocks in the
         // good months — tuned for a tight 6-mind hamlet, it cannot feed 64 minds
@@ -162,6 +176,16 @@ impl Game {
         // schedule (no main-stream RNG), so the seeded harness/AC/proof paths (which
         // never call this) stay byte-identical. Requires `set_society` above.
         world.set_eras(true);
+        // WARFARE on for the live showcase (Civilization Sprint 2): when a village pair
+        // sours past open hostility, each side fields a bounded WARBAND that marches to
+        // the contested border and FIGHTS with era-appropriate weapons (stone clubs →
+        // bronze/iron swords → industrial muskets → space energy arms). War deaths route
+        // through the EXISTING grief path; a war ENDS in a truce (band broken / casualty
+        // cap / clock) that cools the pair + starts a cooldown, so wars FLARE and END and
+        // the villages persist. Live-only and seeded off a dedicated side-RNG, so the
+        // seeded harness/AC/proof paths (which never call this) stay byte-identical.
+        // Requires `set_society` above.
+        world.set_war(true);
         let mut cam = Camera::new(world.w as f32 * 0.5, world.h as f32 * 0.5);
         // A closer cinematic frame than "whole island" so the minds and their built
         // structures read with real detail on load (buildings are tiny at full-island
@@ -705,6 +729,40 @@ fn debug_query_f32(key: &str) -> Option<f32> {
         }
     };
     raw.and_then(|s| s.parse::<f32>().ok())
+}
+
+/// The live SHOWCASE world seed. Defaults to `0x61` (the tuned mortality-arc world).
+/// An optional override — native env `DAIMON_SEED`, web url `?seed=N` (decimal or `0x`
+/// hex) — lets a watcher run the showcase at a different world, e.g. a border-contested
+/// seed where the EMERGENT WARFARE flares (seed 1 declares + resolves a survivable war).
+/// Live-only: the harness builds `GameWorld` directly and never calls this, so seeded
+/// AC/proof/fitness runs are byte-identical regardless of any env/url value.
+fn showcase_seed() -> u64 {
+    let raw: Option<String> = {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::env::var("DAIMON_SEED").ok()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            web_sys::window()
+                .and_then(|w| w.location().search().ok())
+                .and_then(|q: String| {
+                    q.trim_start_matches('?')
+                        .split('&')
+                        .find_map(|kv| kv.strip_prefix("seed=").map(|s| s.to_string()))
+                })
+        }
+    };
+    raw.and_then(|s| {
+        let s = s.trim();
+        if let Some(h) = s.strip_prefix("0x") {
+            u64::from_str_radix(h, 16).ok()
+        } else {
+            s.parse::<u64>().ok()
+        }
+    })
+    .unwrap_or(0x61)
 }
 
 fn warm_debug_ticks() -> u32 {
