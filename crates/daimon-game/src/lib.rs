@@ -50,6 +50,12 @@ struct Game {
     mouse: (f32, f32),
     mouse_down: bool,
     drag_dist: f32,
+    /// Held WASD movement keys (w, a, s, d) — applied smoothly each frame so panning
+    /// is continuous while held, not a jerky one-step-per-keypress. In first-person
+    /// these same keys WALK the eye (forward/back + strafe) instead of panning.
+    keys: [bool; 4],
+    /// Held Shift — sprint (faster walk) in first-person.
+    run: bool,
 }
 
 impl Game {
@@ -159,6 +165,8 @@ impl Game {
             mouse: (0.0, 0.0),
             mouse_down: false,
             drag_dist: 0.0,
+            keys: [false; 4],
+            run: false,
         }
     }
 
@@ -184,6 +192,8 @@ impl Game {
             mouse: (0.0, 0.0),
             mouse_down: false,
             drag_dist: 0.0,
+            keys: [false; 4],
+            run: false,
         }
     }
 
@@ -196,18 +206,87 @@ impl Game {
         }
     }
 
-    /// Pan the camera along its ground basis (WASD). `rx` = right(+)/left(-),
-    /// `fy` = forward(+)/back(-); the step scales with zoom so it feels consistent
-    /// at every distance.
-    fn pan(&mut self, rx: f32, fy: f32) {
+    /// Smooth per-frame WASD pan from the held keys. Direction is normalised (so a
+    /// diagonal isn't faster) and the speed scales with zoom + `dt`, so movement is
+    /// continuous and frame-rate independent rather than one jerky step per keypress.
+    fn pan_held(&mut self, dt: f32) {
+        let rx = (self.keys[3] as i32 - self.keys[1] as i32) as f32; // d - a
+        let fy = (self.keys[0] as i32 - self.keys[2] as i32) as f32; // w - s
+        if rx == 0.0 && fy == 0.0 {
+            return;
+        }
+        let inv = 1.0 / (rx * rx + fy * fy).sqrt();
         let (right, fwd) = crate::math::pan_basis(self.cam.yaw);
-        let step = 0.08 * self.cam.zoom;
+        let step = 1.4 * self.cam.zoom * dt * inv;
         self.cam.cx += (right.0 * rx + fwd.0 * fy) * step;
         self.cam.cy += (right.1 * rx + fwd.1 * fy) * step;
     }
 
+    /// Enter first-person "drop in" mode: stand at the current god-view centre,
+    /// looking out along the god-view yaw at a gentle slightly-downward tilt — so
+    /// you drop in exactly where you were looking. Render+input only; the iso
+    /// camera fields are preserved so Esc restores the god-view exactly.
+    fn enter_fp(&mut self) {
+        if self.cam.is_fp() {
+            return;
+        }
+        self.cam.fp = Some(view::FpView {
+            eye_x: self.cam.cx,
+            eye_z: self.cam.cy,
+            yaw: self.cam.yaw,
+            pitch: -0.12, // a touch downward so the ground reads on entry
+        });
+    }
+
+    /// Exit first-person, restoring the (untouched) iso god-view.
+    fn exit_fp(&mut self) {
+        self.cam.fp = None;
+    }
+
+    /// Per-frame first-person WALK: WASD moves the eye along the look's GROUND
+    /// plane (forward/back + strafe), Shift sprints. Diagonals are normalised so
+    /// they aren't faster, and the eye-height tracks the terrain via `ground_height`
+    /// at render time — so you walk over the island's hills. Sim-untouching.
+    fn walk_held(&mut self, dt: f32) {
+        let Some(fp) = self.cam.fp.as_mut() else { return };
+        let rx = (self.keys[3] as i32 - self.keys[1] as i32) as f32; // strafe: d - a
+        let fy = (self.keys[0] as i32 - self.keys[2] as i32) as f32; // forward: w - s
+        if rx == 0.0 && fy == 0.0 {
+            return;
+        }
+        let inv = 1.0 / (rx * rx + fy * fy).sqrt();
+        // Walk along the GROUND-projected look direction (ignore pitch) so looking
+        // up/down never changes your pace, and forward/right are level.
+        let (forward, right) = crate::math::fp_basis(fp.yaw, 0.0);
+        let pace = if self.run { 14.0 } else { 6.0 }; // sim cells / second
+        let step = pace * dt * inv;
+        fp.eye_x += (forward.x * fy + right.x * rx) * step;
+        fp.eye_z += (forward.z * fy + right.z * rx) * step;
+        // Keep the walker on the island (clamp to the world bounds with a margin).
+        let (w, h) = (self.world.w as f32, self.world.h as f32);
+        fp.eye_x = fp.eye_x.clamp(0.5, w - 1.5);
+        fp.eye_z = fp.eye_z.clamp(0.5, h - 1.5);
+    }
+
+    /// Apply a raw mouse delta to the first-person look (yaw/pitch). Pitch is
+    /// clamped to ±85° so you can't flip over. Sensitivity is in radians per pixel.
+    fn look(&mut self, dx: f32, dy: f32) {
+        let Some(fp) = self.cam.fp.as_mut() else { return };
+        const SENS: f32 = 0.0024; // radians per pixel — reasonable, tunable
+        const PITCH_LIMIT: f32 = 85.0 * std::f32::consts::PI / 180.0;
+        fp.yaw += dx * SENS;
+        fp.pitch = (fp.pitch - dy * SENS).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    }
+
     /// Advance the simulation on a fixed cognitive tick, scaled by speed.
     fn update(&mut self, dt: f32) {
+        // camera movement runs every frame, even while paused. In first-person the
+        // WASD keys WALK the eye; in the god-view they pan the framed centre.
+        if self.cam.is_fp() {
+            self.walk_held(dt);
+        } else {
+            self.pan_held(dt);
+        }
         if let Some(ev) = self.evolve.as_mut() {
             ev.world.animate(dt);
             if self.hud.paused {
@@ -249,10 +328,17 @@ struct App {
 impl App {
     fn new(proxy: EventLoopProxy<AppEvent>, evolve_pop: Option<usize>) -> Self {
         let now = Instant::now();
-        let game = match evolve_pop {
+        let mut game = match evolve_pop {
             Some(pop) => Game::evolve(pop),
             None => Game::new(),
         };
+        // SELF-VERIFY HOOK: start in first-person at a fixed eye/look so a headless
+        // screenshot can confirm the walk-through framing without interactive input
+        // (the live V-toggle is the real entry point). Native: env `DAIMON_FP`; web:
+        // url `?fp=1`. A no-op unless the flag is present.
+        if let Some(fp) = fp_debug_start(&game) {
+            game.cam.fp = Some(fp);
+        }
         Self {
             gfx: None,
             game,
@@ -323,6 +409,22 @@ impl ApplicationHandler<AppEvent> for App {
         self.gfx = Some(gfx);
     }
 
+    /// Raw (unaccelerated, un-clamped) mouse motion — the first-person MOUSE-LOOK
+    /// source. winit reports this on native AND web (under pointer-lock), so the
+    /// same path turns the head everywhere; in the god-view it's ignored.
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        if let winit::event::DeviceEvent::MouseMotion { delta } = event {
+            if self.game.cam.is_fp() {
+                self.game.look(delta.0 as f32, delta.1 as f32);
+            }
+        }
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let Some(gfx) = self.gfx.as_mut() else { return };
         let (sw, sh) = gfx.size();
@@ -332,7 +434,9 @@ impl ApplicationHandler<AppEvent> for App {
 
             WindowEvent::CursorMoved { position, .. } => {
                 let new = (position.x as f32, position.y as f32);
-                if self.game.mouse_down {
+                // First-person turns with raw mouse motion (DeviceEvent::MouseMotion),
+                // not absolute cursor drag — so the ground-plane pan is god-view only.
+                if self.game.mouse_down && !self.game.cam.is_fp() {
                     let dx = new.0 - self.game.mouse.0;
                     let dy = new.1 - self.game.mouse.1;
                     self.game.drag_dist += (dx * dx + dy * dy).sqrt();
@@ -352,7 +456,9 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 ElementState::Released => {
                     self.game.mouse_down = false;
-                    if self.game.drag_dist < 6.0 {
+                    // Click-to-select is a god-view affordance; in first-person the
+                    // pointer is locked for look, so skip picking.
+                    if self.game.drag_dist < 6.0 && !self.game.cam.is_fp() {
                         let (wx, wy) = self.game.cam.pick(
                             self.game.mouse.0,
                             self.game.mouse.1,
@@ -366,7 +472,7 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             },
 
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseWheel { delta, .. } if !self.game.cam.is_fp() => {
                 let amt = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 * 0.02,
@@ -384,24 +490,56 @@ impl ApplicationHandler<AppEvent> for App {
                 self.game.cam.cy += before.1 - after.1;
             }
 
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+            WindowEvent::KeyboardInput { event, .. } => {
+                let pressed = event.state == ElementState::Pressed;
                 match event.logical_key.as_ref() {
-                    Key::Named(NamedKey::Space) => self.game.hud.paused = !self.game.hud.paused,
-                    Key::Named(NamedKey::Escape) => self.game.selected = None,
-                    Key::Named(NamedKey::Tab) => {
+                    // held WASD movement → smooth per-frame pan (set on press AND release)
+                    Key::Character("w") | Key::Character("W") => self.game.keys[0] = pressed,
+                    Key::Character("a") | Key::Character("A") => self.game.keys[1] = pressed,
+                    Key::Character("s") | Key::Character("S") => self.game.keys[2] = pressed,
+                    Key::Character("d") | Key::Character("D") => self.game.keys[3] = pressed,
+                    // Shift = sprint while walking in first-person (set on press+release)
+                    Key::Named(NamedKey::Shift) => self.game.run = pressed,
+                    // V = toggle first-person "drop in" mode. Drops the eye at the
+                    // current god-view centre; on the web grabs pointer-lock for
+                    // mouse-look, releasing it again on exit.
+                    Key::Character("v") | Key::Character("V") if pressed => {
+                        if self.game.cam.is_fp() {
+                            self.game.exit_fp();
+                            release_pointer_lock();
+                        } else {
+                            self.game.enter_fp();
+                            request_pointer_lock(gfx.window());
+                        }
+                    }
+                    // one-shot toggles (on key-down only)
+                    Key::Named(NamedKey::Space) if pressed => self.game.hud.paused = !self.game.hud.paused,
+                    // Esc: leave first-person if in it (back to the god-view); else
+                    // clear the selection as before.
+                    Key::Named(NamedKey::Escape) if pressed => {
+                        if self.game.cam.is_fp() {
+                            self.game.exit_fp();
+                            release_pointer_lock();
+                        } else {
+                            self.game.selected = None;
+                        }
+                    }
+                    Key::Named(NamedKey::Tab) if pressed => {
                         let n = self.game.world.agents.len();
                         if n > 0 {
                             self.game.selected =
                                 Some(self.game.selected.map(|i| (i + 1) % n).unwrap_or(0));
                         }
                     }
-                    Key::Character("]") => {
+                    Key::Character("]") if pressed => {
                         self.game.hud.speed = (self.game.hud.speed + 1.0).min(8.0)
                     }
-                    Key::Character("[") => {
+                    Key::Character("[") if pressed => {
                         self.game.hud.speed = (self.game.hud.speed - 1.0).max(1.0)
                     }
-                    Key::Character("f") | Key::Character("F") => {
+                    // feed-at-cursor is a god-view affordance (it needs the cursor
+                    // ground-pick); ignored in first-person.
+                    Key::Character("f") | Key::Character("F") if pressed && !self.game.cam.is_fp() => {
                         let (wx, wy) = self.game.cam.pick(
                             self.game.mouse.0,
                             self.game.mouse.1,
@@ -412,14 +550,7 @@ impl ApplicationHandler<AppEvent> for App {
                         );
                         self.game.world.feed(wx, wy);
                     }
-                    // Q/E rotate the map; WASD pan it (like click-drag).
-                    Key::Character("q") | Key::Character("Q") => self.game.cam.yaw -= 0.12,
-                    Key::Character("e") | Key::Character("E") => self.game.cam.yaw += 0.12,
-                    Key::Character("w") | Key::Character("W") => self.game.pan(0.0, 1.0),
-                    Key::Character("s") | Key::Character("S") => self.game.pan(0.0, -1.0),
-                    Key::Character("a") | Key::Character("A") => self.game.pan(-1.0, 0.0),
-                    Key::Character("d") | Key::Character("D") => self.game.pan(1.0, 0.0),
-                    Key::Character("g") | Key::Character("G") => {
+                    Key::Character("q") | Key::Character("Q") if pressed => {
                         // toggle quantum-cognitive decision mode across the village
                         self.game.hud.quantum = !self.game.hud.quantum;
                         let q = self.game.hud.quantum;
@@ -486,6 +617,63 @@ impl ApplicationHandler<AppEvent> for App {
                 gfx.window().request_redraw();
             }
             _ => {}
+        }
+    }
+}
+
+/// Self-verify hook: if the FP debug flag is set, return a fixed first-person
+/// eye/look aimed across the island toward the village heart, so a headless shot
+/// can inspect the walk-through framing. Native reads env `DAIMON_FP`; web reads
+/// the url query `?fp=1`. Returns `None` (normal god-view start) when absent.
+fn fp_debug_start(game: &Game) -> Option<view::FpView> {
+    let on = {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::env::var("DAIMON_FP").map(|v| v != "0" && !v.is_empty()).unwrap_or(false)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            web_sys::window()
+                .and_then(|w| w.location().search().ok())
+                .map(|q: String| q.contains("fp=1") || q.contains("fp=true"))
+                .unwrap_or(false)
+        }
+    };
+    if !on {
+        return None;
+    }
+    // Stand among the village (a third of the way in) looking across the heart —
+    // so the shot reads as a ground-level view with buildings/minds/trees filling
+    // the frame, not mostly empty grass.
+    let (w, h) = (game.world.w as f32, game.world.h as f32);
+    let eye_x = w * 0.34;
+    let eye_z = h * 0.46;
+    let cx = w * 0.62;
+    let cz = h * 0.52;
+    let yaw = (cz - eye_z).atan2(cx - eye_x); // aim across the heart
+    Some(view::FpView { eye_x, eye_z, yaw, pitch: -0.04 })
+}
+
+/// Grab the mouse for first-person look. On the WEB this calls the canvas's
+/// `requestPointerLock()` so the cursor hides and raw `movementX/Y` flows in via
+/// winit's `DeviceEvent::MouseMotion`. On native, winit already delivers raw
+/// motion, so this is a no-op.
+fn request_pointer_lock(_window: &Arc<Window>) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use winit::platform::web::WindowExtWebSys;
+        if let Some(canvas) = _window.canvas() {
+            canvas.request_pointer_lock();
+        }
+    }
+}
+
+/// Release the mouse when leaving first-person (web `exitPointerLock`); no-op native.
+fn release_pointer_lock() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            doc.exit_pointer_lock();
         }
     }
 }

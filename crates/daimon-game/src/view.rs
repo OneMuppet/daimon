@@ -16,18 +16,51 @@ use daimon_mind::Process;
 
 const TAU: f32 = std::f32::consts::TAU;
 
+/// First-person "drop in" state: you stand at `(eye_x, eye_z)` in sim coords, at
+/// human eye-height above the terrain there, looking along `yaw`/`pitch`. Pure
+/// render+input — it never touches the sim; it's just an alternative way to look
+/// at the same world. `Some` ⇒ the camera renders first-person; `None` ⇒ the iso
+/// god-view, exactly as before.
+#[derive(Clone, Copy)]
+pub struct FpView {
+    pub eye_x: f32,
+    pub eye_z: f32,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+/// Human eye-height in world units above the terrain you're standing on.
+pub const FP_EYE_HEIGHT: f32 = 1.7;
+
+impl FpView {
+    /// The world-space eye position: standing height above the terrain under you.
+    pub fn eye_pos(&self, w: i32, h: i32) -> Vec3 {
+        let gy = geo::ground_height(w, h, self.eye_x, self.eye_z);
+        Vec3::new(self.eye_x, gy + FP_EYE_HEIGHT, self.eye_z)
+    }
+}
+
 /// The isometric god-view camera: centre (sim cells), vertical zoom half-extent
-/// (world units), and yaw.
+/// (world units), and yaw. When `fp` is `Some`, the camera instead renders a
+/// first-person walk-through view from that eye (render+input only — the iso
+/// fields are preserved untouched so exiting FP restores the exact god-view).
 pub struct Camera {
     pub cx: f32,
     pub cy: f32,
     pub zoom: f32,
     pub yaw: f32,
+    /// First-person "drop in" view, or `None` for the iso god-view.
+    pub fp: Option<FpView>,
 }
 
 impl Camera {
     pub fn new(cx: f32, cy: f32) -> Self {
-        Camera { cx, cy, zoom: 12.0, yaw: math::ISO_YAW_DEG.to_radians() }
+        Camera { cx, cy, zoom: 12.0, yaw: math::ISO_YAW_DEG.to_radians(), fp: None }
+    }
+
+    /// True while in first-person "drop in" mode.
+    pub fn is_fp(&self) -> bool {
+        self.fp.is_some()
     }
 
     fn target_y(&self, w: i32, h: i32) -> f32 {
@@ -35,15 +68,33 @@ impl Camera {
     }
 
     pub fn view_proj(&self, w: i32, h: i32, aspect: f32) -> Mat4 {
-        math::iso_view_proj(self.cx, self.cy, self.target_y(w, h), self.zoom, aspect, self.yaw)
+        match self.fp {
+            Some(fp) => math::perspective_view_proj(
+                fp.eye_pos(w, h),
+                fp.yaw,
+                fp.pitch,
+                math::FP_FOV_DEG.to_radians(),
+                aspect,
+            ),
+            None => math::iso_view_proj(self.cx, self.cy, self.target_y(w, h), self.zoom, aspect, self.yaw),
+        }
     }
 
     pub fn eye(&self, w: i32, h: i32) -> [f32; 3] {
-        let (e, _, _, _) = math::iso_basis(self.cx, self.cy, self.target_y(w, h), self.yaw);
-        [e.x, e.y, e.z]
+        match self.fp {
+            Some(fp) => {
+                let e = fp.eye_pos(w, h);
+                [e.x, e.y, e.z]
+            }
+            None => {
+                let (e, _, _, _) = math::iso_basis(self.cx, self.cy, self.target_y(w, h), self.yaw);
+                [e.x, e.y, e.z]
+            }
+        }
     }
 
-    /// Cursor pixel → sim ground coords (picking / feeding).
+    /// Cursor pixel → sim ground coords (picking / feeding). Iso god-view only;
+    /// first-person uses pointer-lock mouse-look, not ground picking.
     pub fn pick(&self, px: f32, py: f32, sw: f32, sh: f32, w: i32, h: i32) -> (f32, f32) {
         let ndc = [px / sw * 2.0 - 1.0, 1.0 - py / sh * 2.0];
         let plane_y = geo::ground_height(w, h, self.cx, self.cy) + 0.3;
@@ -191,6 +242,16 @@ fn compute_sky(world: &GameWorld, cam: &Camera, aspect: f32) -> Sky {
 
     let (season, weather, weather_kind) = climate(world);
 
+    // Fog is measured as horizontal distance from a centre. In the iso god-view
+    // that centre is the framed point and the reach scales with zoom. In FIRST
+    // PERSON the centre is the eye itself and the reach is a generous fixed depth,
+    // so distant land softens into the horizon haze the way a real ground-level
+    // view does — without ever fogging out what's right in front of you.
+    let (fog_far, fog_target) = match cam.fp {
+        Some(fp) => ((w.max(h) as f32) * 1.2, [fp.eye_x, fp.eye_z]),
+        None => (cam.zoom * 2.6, [cam.cx, cam.cy]),
+    };
+
     Sky {
         view_proj: vp.to_cols(),
         cam_pos: cam.eye(w, h),
@@ -200,11 +261,11 @@ fn compute_sky(world: &GameWorld, cam: &Camera, aspect: f32) -> Sky {
         sun_strength,
         ambient,
         horizon,
-        fog_far: cam.zoom * 2.6,
+        fog_far,
         season_tint: season_tint(season),
         weather,
         weather_kind,
-        fog_target: [cam.cx, cam.cy],
+        fog_target,
     }
 }
 
@@ -258,7 +319,12 @@ pub fn build_with(
     s.sky = compute_sky(world, cam, aspect);
     let vp = Mat4(s.sky.view_proj);
     let (w, h) = (world.w, world.h);
-    let axes = math::iso_axes(cam.cx, cam.cy, cam.yaw);
+    // Billboard axes face the camera: the iso angle in god-view, the live look
+    // direction in first person (so glows always face you as you turn around).
+    let axes = match cam.fp {
+        Some(fp) => math::fp_axes(fp.yaw, fp.pitch),
+        None => math::iso_axes(cam.cx, cam.cy, cam.yaw),
+    };
     let g = |x: f32, z: f32| geo::ground_height(w, h, x, z);
     let glow = |s: &mut Scene, p: [f32; 3], size: f32, c: Color| {
         geo::push_billboard(&mut s.add, p, size, size, axes.0, axes.1, c.0);
@@ -780,7 +846,7 @@ pub fn build_with(
         evo_top_bar(&mut chrome, evo, sw / ui);
         evo_panel(&mut chrome, world, evo, sw / ui, sh / ui);
     } else {
-        top_bar(&mut chrome, world, hud, sw / ui);
+        top_bar(&mut chrome, world, hud, cam.is_fp(), sw / ui);
         inspector(&mut chrome, world, selected, sw / ui, sh / ui);
     }
     for mut q in chrome.quads {
@@ -802,7 +868,11 @@ pub fn build_with(
 /// Project a world point to screen pixels (orthographic ⇒ w = 1).
 fn project(vp: &Mat4, p: [f32; 3], sw: f32, sh: f32) -> Option<(f32, f32)> {
     let c = vp.transform_point(Vec3::new(p[0], p[1], p[2]));
-    if c[3].abs() < 1e-5 {
+    // Reject points behind the camera. Under the orthographic god-view `w` is
+    // always 1, so this is a no-op there; under the first-person PERSPECTIVE a
+    // point behind the eye has `w <= 0` and must not project (it would mirror to a
+    // bogus on-screen spot).
+    if c[3] <= 1e-5 {
         return None;
     }
     let ndc = [c[0] / c[3], c[1] / c[3]];
@@ -1402,7 +1472,7 @@ fn weather_motes(s: &mut Scene, cam: &Camera, axes: ([f32; 3], [f32; 3]), time: 
     }
 }
 
-fn top_bar(s: &mut Scene, world: &GameWorld, hud: &Hud, sw: f32) {
+fn top_bar(s: &mut Scene, world: &GameWorld, hud: &Hud, is_fp: bool, sw: f32) {
     s.rrect(12.0, 12.0, sw - 24.0, 38.0, 10.0, Color::hex(INK, 0.72));
     s.orb(34.0, 31.0, 6.0, 0.8, Color::hex(0x5b3df0, 1.0));
     s.text("DAIMON · SMALLWORLD", 50.0, 21.0, 15.0, Color::hex(PAPER, 0.95));
@@ -1416,18 +1486,22 @@ fn top_bar(s: &mut Scene, world: &GameWorld, hud: &Hud, sw: f32) {
         phase,
     );
     s.text(status, sw - 420.0, 21.0, 13.0, Color::hex(MUTED, 1.0));
-    if hud.quantum {
+    if is_fp {
+        // first-person "drop in" badge — make the live mode unmistakable.
+        s.text("◉ FIRST-PERSON", sw - 160.0, 21.0, 12.0, Color::hex(0xffc24e, 1.0));
+    } else if hud.quantum {
         s.text("⚛ QUANTUM DECISION MODE", sw - 200.0, 21.0, 12.0, Color::hex(0xb98cff, 1.0));
     } else {
         s.text("trained policy", sw - 130.0, 21.0, 12.0, Color::hex(0x5fd6a0, 0.9));
     }
-    s.text(
-        "click an agent · WASD / drag to pan · Q E rotate · scroll zooms to cursor · space pauses · [ / ] speed · F feed · G quantum",
-        50.0,
-        37.0,
-        10.5,
-        Color::hex(MUTED, 0.9),
-    );
+    // The hint line names the controls for the current mode (the V toggle is shown
+    // in both so the player can always find their way in / out of the walk-through).
+    let hint = if is_fp {
+        "FIRST-PERSON · WASD walk · mouse look · Shift run · V / Esc exit to god-view · space pauses"
+    } else {
+        "click an agent · WASD / drag to pan · scroll zooms to cursor · V drop in (first-person) · space pauses · [ / ] speed · F feed · Q quantum"
+    };
+    s.text(hint, 50.0, 37.0, 10.5, Color::hex(MUTED, 0.9));
 }
 
 /// Top bar for the evolution mode: `Generation N · alive/pop · cycle k/10`.
