@@ -668,6 +668,33 @@ pub fn build_with(
         let da = if d.fleeing { 0.40 } else { 0.22 };
         glow(&mut s, [x, gy + 0.40, z], 0.85, Color::hex(0xd8ecff, da));
     }
+    // sheep flock: small, round, woolly, cream — drawn as ambient life like the deer.
+    for sh in &world.sheep {
+        if world.sheep_hidden(sh) {
+            continue;
+        }
+        let (x, z) = (sh.rx, sh.ry);
+        let gy = g(x, z);
+        let mv = anim_move01(sh.rx, sh.ry, sh.pos.x as f32, sh.pos.y as f32);
+        push_sheep(&mut s.lit, x, gy, z, sh.heading, time, sh.fleeing, mv);
+        // a cool-white ground halo so the cream flock reads against the warm grass
+        // (a warm halo would vanish into it) — like the deer's halo, sized to the sheep.
+        let sa = if sh.fleeing { 0.42 } else { 0.26 };
+        glow(&mut s, [x, gy + 0.34, z], 0.8, Color::hex(0xeaf3ff, sa));
+    }
+    // horses: tall, sleek, brown, maned — fast roaming grazers, ambient like the deer.
+    for hs in &world.horses {
+        if world.horse_hidden(hs) {
+            continue;
+        }
+        let (x, z) = (hs.rx, hs.ry);
+        let gy = g(x, z);
+        let mv = anim_move01(hs.rx, hs.ry, hs.pos.x as f32, hs.pos.y as f32);
+        push_horse(&mut s.lit, x, gy, z, hs.heading, time, hs.fleeing, mv);
+        // a warm amber ground halo marks the big chestnut horse against the grass.
+        let ha = if hs.fleeing { 0.40 } else { 0.26 };
+        glow(&mut s, [x, gy + 0.55, z], 1.2, Color::hex(0xf0c98a, ha));
+    }
     for w in &world.wolves {
         let (x, z) = (w.rx, w.ry);
         let gy = g(x, z);
@@ -1740,6 +1767,77 @@ fn push_deer(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, ti
     let sw = phase.sin() * if fleeing { 0.7 } else { 0.5 } * drive;
     for (fz, sx, d) in [(0.18f32, 0.10f32, 1.0f32), (0.18, -0.10, -1.0), (-0.20, 0.10, -1.0), (-0.20, -0.10, 1.0)] {
         push_leg(out, x, gy, z, heading, sc, fz, sx, 0.40, 0.22, sw * d, dark);
+    }
+}
+
+/// A sheep: small, round, woolly — a fat cream fleece body with a small darker face and
+/// dark stubby legs. Oriented by `heading`; a gentle, small-stepped gait (slower cadence
+/// and shorter swing than the deer). `mv` ∈ [0,1] gates the stride so a grazing sheep
+/// stands square; `fleeing` quickens it a touch. Clearly distinct from the deer: shorter,
+/// rounder, woolly white instead of slender tan.
+fn push_sheep(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, time: f32, fleeing: bool, mv: f32) {
+    let drive = if fleeing { 1.0 } else { mv };
+    let cadence = if fleeing { 10.0 } else { 6.0 }; // slow, mincing steps
+    let phase = time * cadence + x * 1.5;
+    let bob = phase.sin() * 0.025 * drive;
+    let wool = Color::hex(0xfdf8ee, 1.0).0; // bright woolly cream / near-white — pops on grass
+    let wool_d = Color::hex(0xece2d0, 1.0).0; // slightly shaded fleece
+    let face = Color::hex(0x352d26, 1.0).0; // dark face/legs (strong contrast vs the fleece)
+    let sc = 1.4; // small and low, but legible at the village zoom (the smallest grazer)
+    // a fat, round woolly body (wide + tall, short along fwd → reads as a blob of fleece)
+    push_part(out, x, gy, z, heading, sc, 0.0, 0.0, 0.42 + bob, [0.24, 0.20, 0.22], wool);
+    // a fleece cap on top so the silhouette domes (round + woolly)
+    push_part(out, x, gy, z, heading, sc, -0.02, 0.0, 0.58 + bob, [0.18, 0.10, 0.18], wool_d);
+    // a small dark face out front, low (sheep graze head-down)
+    push_part(out, x, gy, z, heading, sc, 0.24, 0.0, 0.40, [0.08, 0.09, 0.08], face);
+    // little ears
+    push_part(out, x, gy, z, heading, sc, 0.20, 0.09, 0.46, [0.03, 0.03, 0.05], face);
+    push_part(out, x, gy, z, heading, sc, 0.20, -0.09, 0.46, [0.03, 0.03, 0.05], face);
+    // a tiny tail nub
+    push_part(out, x, gy, z, heading, sc, -0.24, 0.0, 0.40, [0.05, 0.05, 0.04], wool);
+    // four short dark stubby legs, a gentle small-stepped gait.
+    let sw = phase.sin() * if fleeing { 0.45 } else { 0.30 } * drive;
+    for (fz, sx, d) in [(0.13f32, 0.12f32, 1.0f32), (0.13, -0.12, -1.0), (-0.16, 0.12, -1.0), (-0.16, -0.12, 1.0)] {
+        push_leg(out, x, gy, z, heading, sc, fz, sx, 0.22, 0.16, sw * d, face);
+    }
+}
+
+/// A horse: tall, sleek, chestnut/brown — a long body on long legs, an arched neck, a
+/// small head, a flowing MANE down the neck and a long TAIL. Oriented by `heading`; a
+/// cantering gait (longer stride, taller carriage than the deer). `mv` gates the stride;
+/// `fleeing` opens it into a gallop. Clearly distinct: the biggest, leggiest grazer,
+/// sleek brown with a mane and tail rather than antlers.
+fn push_horse(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, time: f32, fleeing: bool, mv: f32) {
+    let drive = if fleeing { 1.0 } else { mv };
+    let cadence = if fleeing { 14.0 } else { 8.0 };
+    let phase = time * cadence + x * 1.6;
+    let canter = phase.sin() * if fleeing { 0.09 } else { 0.05 } * drive;
+    let coat = Color::hex(0x9c5e28, 1.0).0; // rich chestnut — warm, reads against the grass
+    let coat_d = Color::hex(0x6e451f, 1.0).0;
+    let mane = Color::hex(0x2f1c0e, 1.0).0; // near-black mane/tail (strong silhouette accent)
+    let muzzle = Color::hex(0x59391d, 1.0).0;
+    let neck_up = if fleeing { 0.92 } else { 0.86 };
+    let sc = 1.95; // tall — clearly the largest grazer, taller and leggier than a deer
+    // a long sleek body, rises a touch on each canter beat
+    push_part(out, x, gy, z, heading, sc, 0.0, 0.0, 0.58 + canter.max(0.0), [0.34, 0.15, 0.17], coat);
+    // a rounded rump behind
+    push_part(out, x, gy, z, heading, sc, -0.26, 0.0, 0.56 + canter.max(0.0), [0.16, 0.15, 0.16], coat_d);
+    // a strong arched neck (forward + up)
+    push_part(out, x, gy, z, heading, sc, 0.30, 0.0, neck_up, [0.10, 0.16, 0.08], coat);
+    // a mane crest running down the back of the neck
+    push_part(out, x, gy, z, heading, sc, 0.24, 0.0, neck_up + 0.10, [0.04, 0.16, 0.05], mane);
+    // a small head + muzzle out at the top of the neck
+    push_part(out, x, gy, z, heading, sc, 0.42, 0.0, neck_up + 0.12, [0.08, 0.09, 0.07], coat);
+    push_part(out, x, gy, z, heading, sc, 0.52, 0.0, neck_up + 0.08, [0.05, 0.06, 0.05], muzzle);
+    // ears
+    push_part(out, x, gy, z, heading, sc, 0.38, 0.06, neck_up + 0.22, [0.02, 0.05, 0.02], coat_d);
+    push_part(out, x, gy, z, heading, sc, 0.38, -0.06, neck_up + 0.22, [0.02, 0.05, 0.02], coat_d);
+    // a long flowing tail trailing low behind the rump
+    push_part(out, x, gy, z, heading, sc, -0.40, 0.0, 0.44, [0.06, 0.18, 0.05], mane);
+    // four long legs, a cantering diagonal beat.
+    let sw = phase.sin() * if fleeing { 0.8 } else { 0.55 } * drive;
+    for (fz, sx, d) in [(0.24f32, 0.12f32, 1.0f32), (0.24, -0.12, -1.0), (-0.26, 0.12, -1.0), (-0.26, -0.12, 1.0)] {
+        push_leg(out, x, gy, z, heading, sc, fz, sx, 0.46, 0.26, sw * d, coat_d);
     }
 }
 

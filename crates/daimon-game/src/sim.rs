@@ -774,6 +774,10 @@ pub struct GameWorld {
     pub bears: Vec<Bear>,
     /// The deer herd — ambient grazing prey that flee predators. Empty unless `wildlife`.
     pub deer: Vec<Deer>,
+    /// The sheep flock(s) — woolly, clustering grazers near the village. Empty unless `wildlife`.
+    pub sheep: Vec<Sheep>,
+    /// The horse herd — larger, faster roaming grazers. Empty unless `wildlife`.
+    pub horses: Vec<Horse>,
     /// Dedicated wildlife RNG. ALL stochastic wildlife choices draw from here, never from
     /// the main `rng`, so enabling the ecosystem leaves every seeded mind trajectory
     /// byte-identical. Seeded from the world dims when `wildlife` is turned on.
@@ -858,6 +862,9 @@ pub struct GameWorld {
     war_rng: Rng,
     rng: Rng,
     next_id: u32,
+    /// Dedicated counter for sheep/horse ids, drawn from a HIGH range so wildlife never
+    /// advances `next_id` (see [`alloc_wild_id`]). Inert (0) until wildlife is seeded.
+    wild_id_next: u32,
 }
 
 /// A wolf: a lean grey pack hunter. Wolves move as a loose pack (cohere toward the
@@ -905,6 +912,46 @@ pub struct Deer {
     pub ry: f32,
     pub heading: f32,
     /// `true` while actively fleeing (the renderer can pose it alert / bounding).
+    pub fleeing: bool,
+    pub flash: f32,
+    /// When caught: hidden until this tick, then it respawns far from predators.
+    respawn_at: Option<u64>,
+}
+
+/// A sheep: woolly, cream, domesticated-feeling grazing prey that moves as a tight
+/// FLOCK. Sheep steer gently toward their flock's centroid (cohesion) so they cluster
+/// — often near the village — and graze on the grass; they flee predators (wolf, bear,
+/// stalker) like deer but a touch slower (more ticks idle), so a wolf can occasionally
+/// take a straggler. Caught sheep respawn elsewhere (renewable prey), so the flock
+/// persists as standing ambient life. NOT perceived by the minds (ambient, not a
+/// threat), so they add no new mind cognition.
+pub struct Sheep {
+    pub id: EntityId,
+    pub pos: Pos,
+    /// Which flock this sheep belongs to (for cohesion). 0-based.
+    pub flock: u8,
+    pub rx: f32,
+    pub ry: f32,
+    pub heading: f32,
+    /// `true` while actively fleeing (the renderer can pose it alert).
+    pub fleeing: bool,
+    pub flash: f32,
+    /// When caught: hidden until this tick, then it respawns far from predators.
+    respawn_at: Option<u64>,
+}
+
+/// A horse: a larger, FASTER grazer that roams in a small herd. Horses graze and
+/// wander faster than deer (a step almost every tick), and flee predators faster still
+/// (they get a bonus bolt step), so they are hard to catch — but a horse run down at
+/// contact is taken and respawns elsewhere (renewable). NOT perceived by the minds
+/// (ambient life), so they add no new mind cognition.
+pub struct Horse {
+    pub id: EntityId,
+    pub pos: Pos,
+    pub rx: f32,
+    pub ry: f32,
+    pub heading: f32,
+    /// `true` while actively fleeing (the renderer can pose it galloping).
     pub fleeing: bool,
     pub flash: f32,
     /// When caught: hidden until this tick, then it respawns far from predators.
@@ -1262,6 +1309,8 @@ impl GameWorld {
             wolves: Vec::new(),
             bears: Vec::new(),
             deer: Vec::new(),
+            sheep: Vec::new(),
+            horses: Vec::new(),
             // a placeholder seed; reseeded deterministically the moment wildlife is
             // turned on. Never drawn from while `wildlife` is false.
             wild_rng: Rng::new(0),
@@ -1295,6 +1344,7 @@ impl GameWorld {
             war_rng: Rng::new(0),
             rng,
             next_id,
+            wild_id_next: 0,
         }
     }
 
@@ -1365,6 +1415,22 @@ impl GameWorld {
         id
     }
 
+    /// Allocate an EntityId for a NEW wildlife species (sheep / horses) from a dedicated
+    /// HIGH id range that NEVER advances the main `next_id` counter. This is the iron-rule
+    /// discipline for ids: the original deer/wolf/bear seeding (which predates this and
+    /// is part of the byte-identical baseline) still draws from `alloc_id`, but the
+    /// species added here must not shift `next_id` — otherwise later id-bearing entities
+    /// (e.g. lifecycle births) would shift and perturb seed-sensitive live systems
+    /// (society/war), even though the determinism RNGs are untouched. Ids here are only
+    /// ever used as the source tag in a `Hurt` grief event, so any unique value works.
+    fn alloc_wild_id(&mut self) -> EntityId {
+        // base well above any plausible `next_id` (births are pop-capped at ~90 and ids
+        // grow by 1 per spawn); `wild_id_next` lives only while wildlife is on.
+        let id = EntityId(0xE000_0000 + self.wild_id_next);
+        self.wild_id_next += 1;
+        id
+    }
+
     /// Turn on the LIVE-ONLY NATURAL ECOSYSTEM: wolves in loose packs, a solitary
     /// bear, and a deer herd. Called by the live game and `village_diag` only; the
     /// seeded harness paths never call it, so they stay byte-identical (no wildlife in
@@ -1383,6 +1449,7 @@ impl GameWorld {
         // dedicated, dimension-derived seed so two same-sized worlds get the same
         // ecosystem, independent of how many main-stream draws have happened.
         self.wild_rng = Rng::new(0x0017_1DE5u64 ^ self.w as u64 ^ ((self.h as u64) << 20));
+        self.wild_id_next = 0; // dedicated high-range ids for sheep/horses (never `next_id`)
         // --- wolves: a couple of loose packs, scaled gently with map area ---
         if self.wolves.is_empty() {
             let n_packs: u8 = if (self.w * self.h) >= 6000 { 2 } else { 1 };
@@ -1444,6 +1511,67 @@ impl GameWorld {
                 );
                 let id = self.alloc_id();
                 self.deer.push(Deer {
+                    id,
+                    pos,
+                    rx: pos.x as f32,
+                    ry: pos.y as f32,
+                    heading: self.wild_rng.next_f32() * std::f32::consts::TAU,
+                    fleeing: false,
+                    flash: 0.0,
+                    respawn_at: None,
+                });
+            }
+        }
+        // --- sheep: a clustering flock or two, near the village, scaled with area. They
+        // graze and steer toward their flock centroid (cohesion), so they read as a tight
+        // woolly flock rather than scattered animals. Seeded AFTER deer so the deer/wolf/
+        // bear seeds (and thus their positions) are unchanged. ---
+        if self.sheep.is_empty() {
+            let n_flocks: u8 = if (self.w * self.h) >= 6000 { 2 } else { 1 };
+            // total flock size scaled with area (~8-12 on the 124×84 showcase).
+            let total = ((self.w * self.h) / 1000).clamp(8, 14) as usize;
+            let per = (total / n_flocks.max(1) as usize).max(1);
+            let hearth = self.granary;
+            for flock in 0..n_flocks {
+                // a flock rallies near a seed cell biased toward the village hearth so the
+                // sheep feel domesticated/pastured rather than wild.
+                let bx = self.wild_rng.below(self.w as usize) as i32;
+                let by = self.wild_rng.below(self.h as usize) as i32;
+                let seed = self.clamp(Pos::new((bx + hearth.x) / 2, (by + hearth.y) / 2));
+                for _ in 0..per {
+                    let jx = self.wild_rng.below(9) as i32 - 4;
+                    let jy = self.wild_rng.below(9) as i32 - 4;
+                    let pos = self.clamp(Pos::new(seed.x + jx, seed.y + jy));
+                    let id = self.alloc_wild_id();
+                    self.sheep.push(Sheep {
+                        id,
+                        pos,
+                        flock,
+                        rx: pos.x as f32,
+                        ry: pos.y as f32,
+                        heading: self.wild_rng.next_f32() * std::f32::consts::TAU,
+                        fleeing: false,
+                        flash: 0.0,
+                        respawn_at: None,
+                    });
+                }
+            }
+        }
+        // --- horses: a small fast herd that roams the open island. Fewer than sheep
+        // (~4-6 on the showcase). Seeded AFTER sheep so all prior seeds are unchanged. ---
+        if self.horses.is_empty() {
+            let n_horses = ((self.w * self.h) / 1800).clamp(4, 7) as usize;
+            // the herd starts loosely around one roaming seed.
+            let seed = Pos::new(
+                self.wild_rng.below(self.w as usize) as i32,
+                self.wild_rng.below(self.h as usize) as i32,
+            );
+            for _ in 0..n_horses {
+                let jx = self.wild_rng.below(11) as i32 - 5;
+                let jy = self.wild_rng.below(11) as i32 - 5;
+                let pos = self.clamp(Pos::new(seed.x + jx, seed.y + jy));
+                let id = self.alloc_wild_id();
+                self.horses.push(Horse {
                     id,
                     pos,
                     rx: pos.x as f32,
@@ -4151,6 +4279,32 @@ impl GameWorld {
             }
             d.flash = (d.flash - dt * 1.6).max(0.0);
         }
+        for s in &mut self.sheep {
+            if s.respawn_at.is_some() {
+                continue;
+            }
+            let (ox, oy) = (s.rx, s.ry);
+            s.rx += (s.pos.x as f32 - s.rx) * k;
+            s.ry += (s.pos.y as f32 - s.ry) * k;
+            let (mx, my) = (s.rx - ox, s.ry - oy);
+            if mx.hypot(my) > 0.004 {
+                s.heading = my.atan2(mx);
+            }
+            s.flash = (s.flash - dt * 1.6).max(0.0);
+        }
+        for h in &mut self.horses {
+            if h.respawn_at.is_some() {
+                continue;
+            }
+            let (ox, oy) = (h.rx, h.ry);
+            h.rx += (h.pos.x as f32 - h.rx) * k;
+            h.ry += (h.pos.y as f32 - h.ry) * k;
+            let (mx, my) = (h.rx - ox, h.ry - oy);
+            if mx.hypot(my) > 0.004 {
+                h.heading = my.atan2(mx);
+            }
+            h.flash = (h.flash - dt * 1.6).max(0.0);
+        }
     }
 
     /// `true` if a deer is currently caught (despawned, awaiting respawn) — the
@@ -4170,9 +4324,13 @@ impl GameWorld {
     /// as the stalker, so a wolf-kill is grieved exactly like a stalker-kill.
     fn step_wildlife(&mut self) {
         self.step_deer();
+        self.step_sheep();
+        self.step_horses();
         self.step_wolves();
         self.step_bears();
         self.respawn_deer();
+        self.respawn_sheep();
+        self.respawn_horses();
     }
 
     /// The Manhattan distance from `p` to the nearest *living* mind, and that mind's
@@ -4305,6 +4463,14 @@ impl GameWorld {
                 }
             }
             // choose prey: nearest deer, else nearest mind, within aggro.
+            //
+            // NOTE on sheep/horses: predators do NOT retarget onto sheep/horses. Doing so
+            // would change wolf/bear PATHS (they'd chase the nearer flock animal), which —
+            // although all wildlife RNG is on `wild_rng` — moves the predators to different
+            // cells and perturbs the seed-sensitive LIVE systems (society/war) that run on
+            // the same world. Keeping deer-only prey-selection keeps every predator path
+            // byte-identical to the pre-sheep/horse baseline. Sheep/horses are still real
+            // ambient prey: they FLEE predators and RESPAWN, so the populations persist.
             let deer_target = self.nearest_deer(p).filter(|(_, _, d)| *d <= AGGRO);
             let mind_target = self.nearest_mind(p).filter(|(_, _, d)| *d <= AGGRO);
             // a lone, paired-off, or cooled-down wolf won't commit to hunting MINDS (it
@@ -4399,6 +4565,9 @@ impl GameWorld {
         for i in 0..n {
             let p = self.bears[i].pos;
             let in_cooldown = self.tick < self.bears[i].cooldown_until;
+            // deer-only prey-selection (see the note in `step_wolves`): retargeting onto
+            // sheep/horses would shift bear paths and perturb the seed-sensitive live
+            // systems. Sheep/horses remain ambient prey that flee and respawn.
             let deer_target = self.nearest_deer(p).filter(|(_, _, d)| *d <= AGGRO_DEER);
             let mind_target = self.nearest_mind(p).filter(|(_, _, d)| *d <= AGGRO_MIND);
             // bears are slow: move ~every 3rd tick unless actively closing on prey.
@@ -4510,6 +4679,208 @@ impl GameWorld {
             d.respawn_at = None;
             d.fleeing = false;
         }
+    }
+
+    /// Move the sheep: graze + FLOCK. A sheep flees the nearest predator within sight
+    /// (a touch slower than deer — it idles a little more, so a wolf can run down a
+    /// straggler). Otherwise it grazes: most of the time it steers gently toward its
+    /// flock's centroid (cohesion) so the flock stays a tight cluster; occasionally it
+    /// just nibbles in place / wanders a step. All draws use `wild_rng`.
+    fn step_sheep(&mut self) {
+        let sight = self.sight + 2; // a bit less watchful than deer (sight+4)
+        let n = self.sheep.len();
+        // flock centroids up front (for cohesion), from this tick's start.
+        let mut flock_sum: [(i32, i32, i32); 4] = [(0, 0, 0); 4];
+        for s in &self.sheep {
+            if s.respawn_at.is_some() {
+                continue;
+            }
+            let fk = (s.flock as usize).min(3);
+            flock_sum[fk].0 += s.pos.x;
+            flock_sum[fk].1 += s.pos.y;
+            flock_sum[fk].2 += 1;
+        }
+        for i in 0..n {
+            if self.sheep[i].respawn_at.is_some() {
+                continue;
+            }
+            let p = self.sheep[i].pos;
+            let threat = self.nearest_threat(p, sight);
+            if let Some(tp) = threat {
+                // FLEE away — but sheep are slower: only bolt ~3 of every 4 ticks, so a
+                // determined predator occasionally catches a straggler.
+                self.sheep[i].fleeing = true;
+                if self.wild_rng.chance(0.75) {
+                    let mut best = p;
+                    let mut best_d = p.manhattan(tp);
+                    for dir in Dir::ALL {
+                        let q = self.clamp(p.step(dir));
+                        let dd = q.manhattan(tp);
+                        if dd > best_d {
+                            best_d = dd;
+                            best = q;
+                        }
+                    }
+                    self.sheep[i].pos = best;
+                }
+            } else {
+                self.sheep[i].fleeing = false;
+                // GRAZE: move ~half the ticks. Cohesion — steer toward the flock centroid
+                // when it has drifted away, else nibble/wander in place.
+                if self.wild_rng.chance(0.5) {
+                    let fk = (self.sheep[i].flock as usize).min(3);
+                    let (sx, sy, cnt) = flock_sum[fk];
+                    let q = if cnt > 1 {
+                        let centroid = Pos::new(sx / cnt, sy / cnt);
+                        if centroid.manhattan(p) > 3 && self.wild_rng.chance(0.7) {
+                            self.clamp(p.step(p.toward(centroid)))
+                        } else {
+                            self.wild_wander(p)
+                        }
+                    } else {
+                        self.wild_wander(p)
+                    };
+                    self.sheep[i].pos = q;
+                }
+            }
+        }
+    }
+
+    /// Move the horses: graze + roam, FASTER than deer. A horse flees the nearest
+    /// predator within sight and, being fast, gets a bonus bolt step (it covers two
+    /// cells while fleeing) so it almost always escapes. Grazing, it wanders a step
+    /// nearly every tick (faster roam than deer). All draws use `wild_rng`.
+    fn step_horses(&mut self) {
+        let sight = self.sight + 5; // horses are alert and spot danger early
+        let n = self.horses.len();
+        for i in 0..n {
+            if self.horses[i].respawn_at.is_some() {
+                continue;
+            }
+            let p = self.horses[i].pos;
+            let threat = self.nearest_threat(p, sight);
+            if let Some(tp) = threat {
+                // FLEE fast: two cells away from the threat (a galloping bolt).
+                self.horses[i].fleeing = true;
+                let mut cur = p;
+                for _ in 0..2 {
+                    let mut best = cur;
+                    let mut best_d = cur.manhattan(tp);
+                    for dir in Dir::ALL {
+                        let q = self.clamp(cur.step(dir));
+                        let dd = q.manhattan(tp);
+                        if dd > best_d {
+                            best_d = dd;
+                            best = q;
+                        }
+                    }
+                    cur = best;
+                }
+                self.horses[i].pos = cur;
+            } else {
+                self.horses[i].fleeing = false;
+                // GRAZE/ROAM: wander a step almost every tick (faster than deer), gently
+                // drawn toward the nearest grove now and then (a roaming grazer).
+                if self.wild_rng.chance(0.8) {
+                    let toward_grove = self.trees.iter().map(|t| t.pos).min_by_key(|tp| tp.manhattan(p));
+                    let q = match toward_grove {
+                        Some(tp) if tp.manhattan(p) > 3 && self.wild_rng.chance(0.4) => {
+                            self.clamp(p.step(p.toward(tp)))
+                        }
+                        _ => self.wild_wander(p),
+                    };
+                    self.horses[i].pos = q;
+                }
+            }
+        }
+    }
+
+    /// Bring caught sheep back as fresh sheep, near their flock's centroid and clear of
+    /// predators, so the flock stays roughly constant and coherent.
+    fn respawn_sheep(&mut self) {
+        let now = self.tick;
+        let n = self.sheep.len();
+        for i in 0..n {
+            let due = matches!(self.sheep[i].respawn_at, Some(t) if now >= t);
+            if !due {
+                continue;
+            }
+            // prefer near the flock centroid (so it rejoins the flock), but clear of any
+            // predator; a few tries, then fall back to anywhere clear.
+            let flock = self.sheep[i].flock;
+            let mut sum = (0i32, 0i32, 0i32);
+            for s in &self.sheep {
+                if s.respawn_at.is_none() && s.flock == flock {
+                    sum.0 += s.pos.x;
+                    sum.1 += s.pos.y;
+                    sum.2 += 1;
+                }
+            }
+            let mut spot = self.sheep[i].pos;
+            for attempt in 0..10 {
+                let cand = if sum.2 > 0 && attempt < 6 {
+                    let c = Pos::new(sum.0 / sum.2, sum.1 / sum.2);
+                    let jx = self.wild_rng.below(7) as i32 - 3;
+                    let jy = self.wild_rng.below(7) as i32 - 3;
+                    self.clamp(Pos::new(c.x + jx, c.y + jy))
+                } else {
+                    Pos::new(
+                        self.wild_rng.below(self.w as usize) as i32,
+                        self.wild_rng.below(self.h as usize) as i32,
+                    )
+                };
+                if self.nearest_threat(cand, 8).is_none() {
+                    spot = cand;
+                    break;
+                }
+            }
+            let s = &mut self.sheep[i];
+            s.pos = spot;
+            s.rx = spot.x as f32;
+            s.ry = spot.y as f32;
+            s.respawn_at = None;
+            s.fleeing = false;
+        }
+    }
+
+    /// Bring caught horses back as fresh horses, well clear of predators, so the herd
+    /// stays roughly constant.
+    fn respawn_horses(&mut self) {
+        let now = self.tick;
+        let n = self.horses.len();
+        for i in 0..n {
+            let due = matches!(self.horses[i].respawn_at, Some(t) if now >= t);
+            if !due {
+                continue;
+            }
+            let mut spot = self.horses[i].pos;
+            for _ in 0..8 {
+                let cand = Pos::new(
+                    self.wild_rng.below(self.w as usize) as i32,
+                    self.wild_rng.below(self.h as usize) as i32,
+                );
+                if self.nearest_threat(cand, 10).is_none() {
+                    spot = cand;
+                    break;
+                }
+            }
+            let h = &mut self.horses[i];
+            h.pos = spot;
+            h.rx = spot.x as f32;
+            h.ry = spot.y as f32;
+            h.respawn_at = None;
+            h.fleeing = false;
+        }
+    }
+
+    /// `true` if a sheep is currently caught (despawned, awaiting respawn).
+    pub fn sheep_hidden(&self, s: &Sheep) -> bool {
+        s.respawn_at.is_some()
+    }
+
+    /// `true` if a horse is currently caught (despawned, awaiting respawn).
+    pub fn horse_hidden(&self, h: &Horse) -> bool {
+        h.respawn_at.is_some()
     }
 }
 
