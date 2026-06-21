@@ -121,6 +121,10 @@ pub struct Scene {
     pub sky: Sky,
     /// Sim plane size (cells) — the renderer builds/caches the island from this.
     pub world_dims: (i32, i32),
+    /// WALKABLE INTERIORS: true when the player is inside a house — the renderer
+    /// then skips the sea (you're indoors). Terrain is already suppressed via
+    /// `world_dims = (0,0)`. Default false (out on the island, exactly as before).
+    pub interior: bool,
 }
 
 impl Scene {
@@ -132,6 +136,7 @@ impl Scene {
             texts: Vec::with_capacity(256),
             sky: Sky::default(),
             world_dims: (40, 26),
+            interior: false,
         }
     }
 

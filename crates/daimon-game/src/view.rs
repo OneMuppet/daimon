@@ -64,11 +64,24 @@ pub struct Camera {
     pub yaw: f32,
     /// First-person "drop in" view, or `None` for the iso god-view.
     pub fp: Option<FpView>,
+    /// WALKABLE INTERIORS: when `Some(floor_y)`, the first-person eye stands on a
+    /// FLAT interior floor at `floor_y` (eye = floor_y + eye-height) instead of the
+    /// island terrain — so a room reads as a level room, not draped on the hills.
+    /// `None` ⇒ the eye-height tracks the terrain, exactly as before.
+    pub interior_floor: Option<f32>,
 }
 
 impl Camera {
     pub fn new(cx: f32, cy: f32) -> Self {
-        Camera { cx, cy, zoom: 12.0, yaw: math::ISO_YAW_DEG.to_radians(), fp: None }
+        Camera { cx, cy, zoom: 12.0, yaw: math::ISO_YAW_DEG.to_radians(), fp: None, interior_floor: None }
+    }
+
+    /// The first-person eye position, honouring a flat interior floor if set.
+    fn fp_eye(&self, fp: &FpView, w: i32, h: i32) -> Vec3 {
+        match self.interior_floor {
+            Some(fy) => Vec3::new(fp.eye_x, fy + FP_EYE_HEIGHT, fp.eye_z),
+            None => fp.eye_pos(w, h),
+        }
     }
 
     /// True while in first-person "drop in" mode.
@@ -83,7 +96,7 @@ impl Camera {
     pub fn view_proj(&self, w: i32, h: i32, aspect: f32) -> Mat4 {
         match self.fp {
             Some(fp) => math::perspective_view_proj(
-                fp.eye_pos(w, h),
+                self.fp_eye(&fp, w, h),
                 fp.yaw,
                 fp.pitch,
                 math::FP_FOV_DEG.to_radians(),
@@ -96,7 +109,7 @@ impl Camera {
     pub fn eye(&self, w: i32, h: i32) -> [f32; 3] {
         match self.fp {
             Some(fp) => {
-                let e = fp.eye_pos(w, h);
+                let e = self.fp_eye(&fp, w, h);
                 [e.x, e.y, e.z]
             }
             None => {
@@ -293,6 +306,98 @@ pub struct EvoHud {
     pub last: Option<crate::evolve_mode::GenStats>,
 }
 
+/// Render a WALKABLE HOUSE INTERIOR — a self-contained little room scene drawn in
+/// place of the island while the player is inside. The room geometry is the
+/// interior's own generated map; the eye is the first-person camera standing on the
+/// flat interior floor (the camera's `interior_floor` override). Warm hearth glows
+/// light the room; a small HUD prompt explains the controls.
+fn build_interior(
+    inter: &crate::interior::Interior,
+    cam: &Camera,
+    sw: f32,
+    sh: f32,
+    time: f32,
+    ui: f32,
+) -> Scene {
+    let mut s = Scene::new();
+    // suppress the island: zero dims ⇒ the renderer builds an empty terrain, and
+    // the `interior` flag tells it to skip the sea too.
+    s.world_dims = (0, 0);
+    s.interior = true;
+    let aspect = sw / sh;
+
+    // Camera: first-person from the eye standing on the flat interior floor. (The
+    // caller has set `cam.interior_floor = Some(floor_y)`, so `view_proj`/`eye`
+    // already use the flat floor; if somehow not in FP, fall back to identity.)
+    let vp = cam.view_proj(0, 0, aspect);
+    let billboard_axes = match cam.fp {
+        Some(fp) => math::fp_axes(fp.yaw, fp.pitch),
+        None => math::fp_axes(0.0, 0.0),
+    };
+
+    // A warm, even indoor light — a low ambient so corners read, a soft "sun"
+    // (skylight through the door/windows) from above, and the hearth glow carries
+    // the mood. No day/night, no weather, no fog distance (it's a small room).
+    s.sky = Sky {
+        view_proj: vp.to_cols(),
+        cam_pos: cam.eye(0, 0),
+        sun_dir: [0.35, 0.86, 0.30],
+        daylight: 0.85,
+        sun_color: [1.0, 0.90, 0.74], // warm interior key
+        sun_strength: 1.25,
+        ambient: [0.34, 0.30, 0.26], // warm low ambient so the room isn't black
+        horizon: [0.07, 0.05, 0.04], // a warm-dark "beyond the walls" (the clear colour)
+        fog_far: 600.0, // effectively off — a small room shouldn't fog its own walls
+        season_tint: [0.0, 0.0, 0.0, 0.0],
+        weather: 0.0,
+        weather_kind: 0.0,
+        fog_target: [0.0, 0.0],
+    };
+
+    // Build the room geometry (floor, walls with a door gap, ceiling, furniture).
+    let hearths = inter.build(&mut s.lit).to_vec();
+
+    // Warm hearth/brazier glows — additive billboards facing the eye, breathing.
+    let breathe = 0.6 + 0.4 * (time * 1.7).sin();
+    for hp in &hearths {
+        // the fire sits a little above the floor in the cavity.
+        let p = [hp[0], inter.floor_y() + 0.35, hp[2] + 0.10];
+        glow_add(&mut s, p, 0.55 * breathe, billboard_axes, Color::hex(0xff7a2a, 0.40));
+        glow_add(&mut s, p, 0.26 * breathe, billboard_axes, Color::hex(0xffd28a, 0.55));
+        glow_add(&mut s, p, 0.13, billboard_axes, Color::hex(0xfff0d0, 0.6));
+    }
+    // a soft fill glow at the room centre so the whole interior reads lit, not just
+    // by the hearth — like daylight spilling through the open door.
+    glow_add(
+        &mut s,
+        [0.0, inter.wall_h * 0.7, inter.hz * 0.3],
+        inter.hx.max(inter.hz) * 0.9,
+        billboard_axes,
+        Color::hex(0xfff2dc, 0.10),
+    );
+
+    // HUD: a small indoor prompt strip (controls), scaled by dpr.
+    let pad = 16.0 * ui;
+    let fs = 15.0 * ui;
+    let txt = if inter.at_door(
+        cam.fp.map(|f| f.eye_x).unwrap_or(0.0),
+        cam.fp.map(|f| f.eye_z).unwrap_or(0.0),
+    ) {
+        "INSIDE  ·  WASD walk  ·  mouse look  ·  E or Esc to step outside"
+    } else {
+        "INSIDE  ·  WASD walk  ·  mouse look  ·  go to the door + E (or Esc) to leave"
+    };
+    s.rrect(pad * 0.6, pad * 0.6, fs * txt.len() as f32 * 0.52 + pad, fs + pad * 0.8, 8.0, Color::hex(0x000000, 0.42));
+    s.text(txt, pad, pad, fs, Color::hex(0xfff2dc, 0.96));
+
+    s
+}
+
+/// Push an additive glow billboard into the scene's `add` list (interior lighting).
+fn glow_add(s: &mut Scene, p: [f32; 3], size: f32, axes: ([f32; 3], [f32; 3]), c: Color) {
+    geo::push_billboard(&mut s.add, p, size, size, axes.0, axes.1, c.0);
+}
+
 /// Backwards-compatible entry point (village mode): identical to before.
 #[allow(clippy::too_many_arguments)]
 pub fn build(
@@ -322,10 +427,35 @@ pub fn build_with(
     time: f32,
     ui: f32,
 ) -> Scene {
+    build_full(world, cam, selected, hud, evo, None, sw, sh, time, ui)
+}
+
+/// Full render entry, including the optional WALKABLE INTERIOR. When `interior` is
+/// `Some`, the renderer draws that house's generated room (floor/walls/furniture)
+/// instead of the island, and the HUD shows an indoor prompt. Otherwise it is the
+/// exact incumbent island render.
+#[allow(clippy::too_many_arguments)]
+pub fn build_full(
+    world: &GameWorld,
+    cam: &Camera,
+    selected: Option<usize>,
+    hud: &Hud,
+    evo: Option<&EvoHud>,
+    interior: Option<&crate::interior::Interior>,
+    sw: f32,
+    sh: f32,
+    time: f32,
+    ui: f32,
+) -> Scene {
     // `ui` is the HUD scale (device-pixel-ratio): the world renders into the full
     // backing buffer, so HUD chrome laid out in absolute pixels must be scaled by
     // dpr or it shrinks to half-size on a Retina display.
     let ui = ui.clamp(1.0, 3.0);
+    // INSIDE A HOUSE: render the interior scene only (a separate, self-contained
+    // little map), suppressing the island terrain + sea.
+    if let Some(inter) = interior {
+        return build_interior(inter, cam, sw, sh, time, ui);
+    }
     let mut s = Scene::new();
     s.world_dims = (world.w, world.h);
     let aspect = sw / sh;

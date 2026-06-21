@@ -575,9 +575,13 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.dyn_lit.slice(..));
                 pass.draw(0..lit_n as u32, 0..1);
             }
-            pass.set_pipeline(&self.water_pipeline);
-            pass.set_vertex_buffer(0, self.water_vbuf.slice(..));
-            pass.draw(0..self.water_len, 0..1);
+            // The sea is the island's surrounding ocean — skip it indoors (the
+            // player is inside a house; there is no sea in the room).
+            if !scene.interior {
+                pass.set_pipeline(&self.water_pipeline);
+                pass.set_vertex_buffer(0, self.water_vbuf.slice(..));
+                pass.draw(0..self.water_len, 0..1);
+            }
             if add_n > 0 {
                 pass.set_pipeline(&self.add_pipeline);
                 pass.set_vertex_buffer(0, self.add_vbuf.slice(..));

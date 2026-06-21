@@ -1079,10 +1079,25 @@ pub mod pieces {
         let lintel_h = height - door_h;
         let lhalf = if face.runs_ew() { [len, lintel_h * 0.5, thick + 0.005] } else { [thick + 0.005, lintel_h * 0.5, len] };
         push_box(out, [px, y0 + door_h + lintel_h * 0.5, pz], lhalf, 0.0, tint(st.wall, tone));
+        // a recessed DARK threshold behind the leaf so the opening reads as an actual
+        // entry (a real doorway, not just a painted panel), even at a distance.
         let dw = len - jamb - 0.02;
-        let dhalf = if face.runs_ew() { [dw, door_h * 0.5, 0.04] } else { [0.04, door_h * 0.5, dw] };
-        let inset = 0.06;
-        push_box(out, [px - nx * inset, y0 + door_h * 0.5, pz - nz * inset], dhalf, 0.0, st.trim);
+        let dark = [st.trim[0] * 0.35, st.trim[1] * 0.35, st.trim[2] * 0.35, 1.0];
+        let rhalf = if face.runs_ew() { [dw, door_h * 0.5, 0.03] } else { [0.03, door_h * 0.5, dw] };
+        push_box(out, [px - nx * 0.10, y0 + door_h * 0.5, pz - nz * 0.10], rhalf, 0.0, dark);
+        // the door LEAF itself — a warm timber slab set in the opening, slightly proud
+        // so it catches light and clearly reads as a door (two plank-tone halves).
+        let leaf = [st.trim[0] * 1.15, st.trim[1] * 1.05, st.trim[2] * 0.95, 1.0];
+        let dhalf = if face.runs_ew() { [dw, door_h * 0.5, 0.05] } else { [0.05, door_h * 0.5, dw] };
+        let inset = 0.04;
+        push_box(out, [px - nx * inset, y0 + door_h * 0.5, pz - nz * inset], dhalf, 0.0, leaf);
+        // a raised stone threshold step at the foot of the door (you step up to enter).
+        let shalf = if face.runs_ew() { [len * 0.7, 0.04, thick + 0.08] } else { [thick + 0.08, 0.04, len * 0.7] };
+        push_box(out, [px + nx * 0.06, y0 + 0.04, pz + nz * 0.06], shalf, 0.0, tint(STONE_DARK, tone));
+        // a small brass door HANDLE so it reads as a working door up close.
+        let off = dw * 0.55;
+        let (hx, hz) = if face.runs_ew() { (off, 0.0) } else { (0.0, off) };
+        push_box(out, [px - nx * (inset + 0.04) + hx, y0 + door_h * 0.45, pz - nz * (inset + 0.04) + hz], [0.025, 0.04, 0.025], 0.0, [0.72, 0.58, 0.26, 1.0]);
     }
 
     /// A pitched (gable) roof, era-styled. Same shape as [`pitched_roof`].

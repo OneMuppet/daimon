@@ -12,6 +12,7 @@ pub mod poet;
 pub mod redqueen;
 pub mod geo;
 pub mod gfx;
+pub mod interior;
 pub mod math;
 pub mod scene;
 pub mod sim;
@@ -62,6 +63,12 @@ struct Game {
     keys: [bool; 4],
     /// Held Shift — sprint (faster walk) in first-person.
     run: bool,
+    /// WALKABLE INTERIORS (live-only): when `Some`, the player is INSIDE a house —
+    /// the renderer draws that house's generated interior map instead of the island,
+    /// and first-person WASD walks within the room (collision-clamped to the walls).
+    /// `None` ⇒ out on the island, exactly as before. Built on demand when the player
+    /// presses E at a door (keyed by house, off a local rng — never touches the sim).
+    interior: Option<interior::Interior>,
 }
 
 impl Game {
@@ -228,6 +235,7 @@ impl Game {
             drag_dist: 0.0,
             keys: [false; 4],
             run: false,
+            interior: None,
         }
     }
 
@@ -255,6 +263,7 @@ impl Game {
             drag_dist: 0.0,
             keys: [false; 4],
             run: false,
+            interior: None,
         }
     }
 
@@ -299,9 +308,75 @@ impl Game {
         });
     }
 
-    /// Exit first-person, restoring the (untouched) iso god-view.
+    /// Exit first-person, restoring the (untouched) iso god-view. If currently
+    /// inside a house, step back out onto the island first.
     fn exit_fp(&mut self) {
+        if self.interior.is_some() {
+            self.exit_interior();
+        }
         self.cam.fp = None;
+    }
+
+    /// Try to ENTER the house whose door the first-person eye is standing nearest,
+    /// if it is close enough. Generates that house's interior map on demand (keyed
+    /// by the house identity, off a local rng — never touches the sim) and snaps the
+    /// eye just inside the door. No-op if not in FP, already inside, or no door near.
+    fn enter_nearest_house(&mut self) {
+        if !self.cam.is_fp() || self.interior.is_some() {
+            return;
+        }
+        let Some(fp) = self.cam.fp else { return };
+        let houses = interior::house_anchors(&self.world);
+        // nearest door within reach of the eye (ground-plane distance).
+        let mut best: Option<(f32, interior::HouseRef)> = None;
+        for hr in houses {
+            let d = (fp.eye_x - hr.door_x).hypot(fp.eye_z - hr.door_z);
+            if best.as_ref().map(|(bd, _)| d < *bd).unwrap_or(true) {
+                best = Some((d, hr));
+            }
+        }
+        // door reach: stand within ~2 cells of the doorway to enter.
+        if let Some((d, hr)) = best {
+            if d <= 2.2 {
+                self.enter_house(hr);
+            }
+        }
+    }
+
+    /// Enter a specific house (also the `?interior=N` debug seam's entry point).
+    /// Builds the interior, switches to first-person, and stands the eye just
+    /// inside the door looking into the room.
+    fn enter_house(&mut self, hr: interior::HouseRef) {
+        let inter = interior::Interior::for_house(hr);
+        // stand a comfortable step inside the door (the +z wall has the gap),
+        // looking toward -z (into the room, at the hearth on the back wall). A touch
+        // further in than the threshold so the whole room — and all four walls —
+        // frame cleanly on entry rather than the doorway clipping the side walls.
+        let eye_z = (inter.hz - 1.6).max(0.0);
+        let floor_y = inter.floor_y();
+        self.interior = Some(inter);
+        self.cam.interior_floor = Some(floor_y); // stand on the flat interior floor
+        self.cam.fp = Some(view::FpView {
+            eye_x: 0.0,
+            eye_z,
+            yaw: -std::f32::consts::FRAC_PI_2, // face -z (into the room)
+            pitch: -0.05,
+        });
+    }
+
+    /// Step back out of the current interior onto the island, placing the eye just
+    /// outside the house's door looking away from it.
+    fn exit_interior(&mut self) {
+        let Some(inter) = self.interior.take() else { return };
+        let hr = inter.house;
+        self.cam.interior_floor = None; // back on the island terrain
+        // stand a step outside the south door, looking south (away from the house).
+        self.cam.fp = Some(view::FpView {
+            eye_x: hr.door_x,
+            eye_z: hr.door_z + 1.0,
+            yaw: std::f32::consts::FRAC_PI_2, // +z (away from the house)
+            pitch: -0.08,
+        });
     }
 
     /// Per-frame first-person WALK: WASD moves the eye along the look's GROUND
@@ -325,10 +400,19 @@ impl Game {
         // god-view pan basis, so A/D would otherwise be inverted in first person.
         fp.eye_x += (forward.x * fy - right.x * rx) * step;
         fp.eye_z += (forward.z * fy - right.z * rx) * step;
-        // Keep the walker on the island (clamp to the world bounds with a margin).
-        let (w, h) = (self.world.w as f32, self.world.h as f32);
-        fp.eye_x = fp.eye_x.clamp(0.5, w - 1.5);
-        fp.eye_z = fp.eye_z.clamp(0.5, h - 1.5);
+        // INSIDE A HOUSE: walk in the interior's LOCAL frame and collide with the
+        // room walls (clamp to the bounds, with a doorway gap to step through). On
+        // the island, clamp to the world bounds as before.
+        if let Some(inter) = &self.interior {
+            // a slower indoor pace reads better in a small room.
+            let (cx, cz) = inter.clamp_walk(fp.eye_x, fp.eye_z, 0.28);
+            fp.eye_x = cx;
+            fp.eye_z = cz;
+        } else {
+            let (w, h) = (self.world.w as f32, self.world.h as f32);
+            fp.eye_x = fp.eye_x.clamp(0.5, w - 1.5);
+            fp.eye_z = fp.eye_z.clamp(0.5, h - 1.5);
+        }
     }
 
     /// Apply a raw mouse delta to the first-person look (yaw/pitch). Pitch is
@@ -413,6 +497,61 @@ impl App {
         // url `?fp=1`. A no-op unless the flag is present.
         if let Some(fp) = fp_debug_start(&game) {
             game.cam.fp = Some(fp);
+        }
+        // SELF-VERIFY HOOK for WALKABLE INTERIORS: `?interior=N` (web) / DAIMON_INTERIOR=N
+        // (native) auto-ENTERS the interior of house index N in first-person on load, so
+        // a headless screenshot can show the inside of a furnished room (the live E-press
+        // is the real entry point). Live-only; never touched by the harness. Combine with
+        // `&fp=1` so the FP camera + pointer state are coherent.
+        if let Some(n) = debug_query_f32("interior") {
+            let houses = interior::house_anchors(&game.world);
+            if !houses.is_empty() {
+                let idx = (n as usize).min(houses.len() - 1);
+                game.enter_house(houses[idx]);
+            }
+        }
+        // SELF-VERIFY HOOK for the EXTERIOR DOOR: `?house=N` frames the iso god-view
+        // tightly onto house index N (centres + zooms in) so a headless screenshot can
+        // inspect that building's door from outside. Live-only; never touched by the
+        // harness. Pairs with `?interior=N` (the inside of the same house N).
+        if let Some(n) = debug_query_f32("house") {
+            let houses = interior::house_anchors(&game.world);
+            if !houses.is_empty() {
+                let idx = (n as usize).min(houses.len() - 1);
+                let hr = houses[idx];
+                let fp_on = {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        std::env::var("DAIMON_FP").map(|v| v != "0" && !v.is_empty()).unwrap_or(false)
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        web_sys::window()
+                            .and_then(|w| w.location().search().ok())
+                            .map(|q: String| q.contains("fp=1") || q.contains("fp=true"))
+                            .unwrap_or(false)
+                    }
+                };
+                if fp_on {
+                    // FIRST-PERSON door view: stand a couple cells south of the door,
+                    // looking north straight at the entrance — a face-on door shot.
+                    game.cam.interior_floor = None;
+                    let dist = debug_query_f32("dist").unwrap_or(2.6);
+                    game.cam.fp = Some(view::FpView {
+                        eye_x: hr.door_x,
+                        eye_z: hr.door_z + dist,
+                        yaw: -std::f32::consts::FRAC_PI_2, // face -z (toward the door)
+                        pitch: -0.05,
+                    });
+                } else {
+                    // iso god-view, framed tight on the house.
+                    game.cam.fp = None;
+                    game.cam.interior_floor = None;
+                    game.cam.cx = hr.cx;
+                    game.cam.cy = hr.cz + 1.5; // bias toward the south door side
+                    game.cam.zoom = debug_query_f32("zoom").unwrap_or(5.0);
+                }
+            }
         }
         // DEBUG: suppress mind glow so a headless shot can inspect the bare villager
         // character mesh (`?noglow=1` / DAIMON_NOGLOW). Render aid only; no sim effect.
@@ -590,6 +729,20 @@ impl ApplicationHandler<AppEvent> for App {
                             request_pointer_lock(gfx.window());
                         }
                     }
+                    // E = ENTER / EXIT a house interior (first-person only). At a
+                    // door outside, E walks IN to that house's generated interior;
+                    // at the interior door (or with Esc), E steps back OUT.
+                    Key::Character("e") | Key::Character("E") if pressed && self.game.cam.is_fp() => {
+                        if let Some(inter) = &self.game.interior {
+                            if let Some(fp) = self.game.cam.fp {
+                                if inter.at_door(fp.eye_x, fp.eye_z) {
+                                    self.game.exit_interior();
+                                }
+                            }
+                        } else {
+                            self.game.enter_nearest_house();
+                        }
+                    }
                     // one-shot toggles (on key-down only)
                     Key::Named(NamedKey::Space) if pressed => self.game.hud.paused = !self.game.hud.paused,
                     // Esc: leave first-person if in it (back to the god-view); else
@@ -680,12 +833,13 @@ impl ApplicationHandler<AppEvent> for App {
                 });
                 // Fully user-driven camera: WASD pan, Q/E rotate, scroll-zoom to the
                 // cursor. No auto-orbit, so manual control never fights a drift.
-                let scene = view::build_with(
+                let scene = view::build_full(
                     self.game.view_world(),
                     &self.game.cam,
                     self.game.selected,
                     &self.game.hud,
                     evo.as_ref(),
+                    self.game.interior.as_ref(),
                     sw,
                     sh,
                     t,
