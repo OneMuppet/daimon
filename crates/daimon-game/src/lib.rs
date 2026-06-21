@@ -193,6 +193,14 @@ impl Game {
         // seeded harness/AC/proof paths (which never call this) stay byte-identical.
         // Requires `set_society` above.
         world.set_war(true);
+        // CIVILIZATION CAPSTONE on for the live showcase (Civilization Sprint 3): each
+        // village now has a named LEADER (its eldest member), sustained alliances
+        // crystallize into named TREATIES, an advanced village raises a monumental WONDER
+        // at its centre, and a SPACE-AGE village builds a LAUNCHPAD and periodically
+        // launches a ROCKET that arcs to the moon. Live-only and seeded off a dedicated
+        // side-RNG, so the seeded harness/AC/proof paths (which never call this) stay
+        // byte-identical. Requires `set_society` above.
+        world.set_civ(true);
         let mut cam = Camera::new(world.w as f32 * 0.5, world.h as f32 * 0.5);
         // A closer cinematic frame than "whole island" so the minds and their built
         // structures read with real detail on load (buildings are tiny at full-island
@@ -210,6 +218,28 @@ impl Game {
         let warm = warm_debug_ticks();
         for _ in 0..warm {
             world.step();
+        }
+        // CAPTURE SEAM (live-only, mirrors `?warm`): `?advance=N` fast-forwards EVERY
+        // peopled village's research to era rank N (0=Stone … 4=Space) AFTER any warm, so a
+        // headless screenshot can show WONDERS + the SPACE AGE (launchpads/rockets) without
+        // an impractically deep warm. Native env `DAIMON_ADVANCE`, web url `?advance=N`.
+        // Absent → no fast-forward (a normal climb). Never touched by the harness/AC/proof
+        // paths (they build `GameWorld` directly + never arm eras/civ). Requires eras+civ.
+        if let Some(adv) = debug_query_f32("advance") {
+            world.advance_research_to_era(adv as usize);
+            // run a couple of society cadences (≈2× the 60-tick period) so the raised
+            // wonders / Space launchpads settle and (at Space) the launch cadence begins.
+            for _ in 0..120 {
+                world.step();
+            }
+        }
+        // CAPTURE SEAM (live-only): `?launch=1` forces every Space-era village to fire a
+        // rocket and rewinds the launch tick so it is caught MID-FLIGHT in the first frame
+        // — so a screenshot can show a rocket arcing to the moon on demand without timing a
+        // launch. Native env `DAIMON_LAUNCH`, web url `?launch=1`. Never touched by harness.
+        if debug_query_f32("launch").map(|v| v != 0.0).unwrap_or(false) {
+            world.force_launch();
+            world.put_rockets_mid_flight();
         }
         // DEBUG camera framing (live-only look-iteration seam): `?zoom=N` tightens the
         // iso frame and `?cx=`/`?cz=` re-centre it, so a headless shot can frame a single

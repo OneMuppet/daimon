@@ -635,6 +635,13 @@ pub fn build_full(
         }
     }
 
+    // ---- CIVILIZATION CAPSTONE (Sprint 3): WONDERS, SPACE-AGE launchpads + ROCKETS,
+    // and the MOON in the sky. Empty (no draw) off a civ world, so a non-civ render is the
+    // exact incumbent scene. Drawn after the society banners so monuments sit on the land.
+    if world.civ {
+        build_civ(&mut s, world, time, &g, &glow, &axes);
+    }
+
     // ---- open-world: trees (harvestable wood) + the village granary ----
     // Only present in an open world (`trees` is empty otherwise). A tree is a brown
     // trunk + a green canopy; a depleted (gathered) tree loses its canopy to a bare
@@ -1727,6 +1734,205 @@ fn build_structures(
     }
 }
 
+/// CIVILIZATION CAPSTONE render (Sprint 3): the MOON in the sky, each advanced village's
+/// WONDER, a Space-era village's LAUNCHPAD, and any ROCKET in flight (rising on a plume
+/// + arcing to the moon). Live-only — reads only civ-gated world state, writes nothing to
+/// the sim, so the harness scene is byte-identical (it never arms civ). Called from
+/// `build_full` only when `world.civ`.
+#[allow(clippy::too_many_arguments)]
+fn build_civ(
+    s: &mut Scene,
+    world: &GameWorld,
+    time: f32,
+    g: &impl Fn(f32, f32) -> f32,
+    glow: &impl Fn(&mut Scene, [f32; 3], f32, Color),
+    axes: &([f32; 3], [f32; 3]),
+) {
+    use crate::sim::WonderKind;
+
+    // ---- the MOON: a pale disc high over the island, the rockets' destination. Placed
+    // off to one side of the map at altitude, gently drifting, so it always reads as "the
+    // moon up there" and rockets visibly arc TOWARD it. A lit core + a soft additive halo.
+    let (mw, mh) = (world.w as f32, world.h as f32);
+    let moon_pos = [mw * 0.22, 19.0 + 1.0 * (time * 0.1).sin(), mh * 0.12];
+    // a solid pale disc (a low-seg cone seen edge-on reads as a flat moon face); the
+    // additive halo + glow give it body and a cool corona.
+    geo::push_billboard(&mut s.add, moon_pos, 4.4, 4.4, axes.0, axes.1, Color::hex(0xdfe6f5, 0.95).0);
+    geo::push_billboard(&mut s.add, moon_pos, 3.2, 3.2, axes.0, axes.1, Color::hex(0xf2f6ff, 0.6).0);
+    glow(s, moon_pos, 9.0, Color::hex(0xbcd0f5, 0.16));
+    glow(s, moon_pos, 14.0, Color::hex(0x95b4e6, 0.08));
+
+    // ---- WONDERS: a great monument at each village that has raised one. Bigger than any
+    // building, tinted by the village hue, and ramping up from the ground over its first
+    // ~300 ticks so it reads as RISING when it appears. Three silhouettes (pyramid / spire
+    // / rotunda) so the island shows variety. Topped with a bright capstone glow.
+    for v in &world.villages {
+        let Some(w) = &v.wonder else { continue };
+        if v.population == 0 {
+            continue;
+        }
+        let (cx, cz) = (v.center.x as f32, v.center.y as f32);
+        let gy = g(cx, cz);
+        // rise ramp: 0→1 over ~300 ticks from when it was raised.
+        let age = world.tick.saturating_sub(w.raised) as f32;
+        let rise = smoothstep(0.0, 300.0, age).max(0.04);
+        let hue = Color::hex(v.hue, 1.0).0;
+        let stone = [hue[0] * 0.55 + 0.30, hue[1] * 0.55 + 0.30, hue[2] * 0.55 + 0.30, 1.0];
+        let trim = [hue[0] * 0.9 + 0.1, hue[1] * 0.9 + 0.1, hue[2] * 0.9 + 0.1, 1.0];
+        let cap; // the bright apex point for the crowning glow
+        match w.kind {
+            WonderKind::Pyramid => {
+                // a stepped great pyramid: 5 shrinking stone tiers.
+                let tiers = 5;
+                let base = 3.4f32;
+                let tier_h = 0.95 * rise;
+                for t in 0..tiers {
+                    let f = t as f32 / tiers as f32;
+                    let half = base * (1.0 - f) * 0.9;
+                    let y0 = gy + 0.1 + t as f32 * tier_h;
+                    geo::push_box(
+                        &mut s.lit,
+                        [cx, y0 + tier_h * 0.5, cz],
+                        [half, tier_h * 0.5, half],
+                        0.0,
+                        if t % 2 == 0 { stone } else { trim },
+                    );
+                }
+                cap = [cx, gy + 0.1 + tiers as f32 * tier_h + 0.2, cz];
+                // a golden capstone.
+                geo::push_box(&mut s.lit, [cx, cap[1] - 0.1, cz], [0.4 * rise, 0.4 * rise, 0.4 * rise], 0.0, [0.95, 0.82, 0.35, 1.0]);
+            }
+            WonderKind::Spire => {
+                // a soaring obelisk: a tall tapering shaft on a small plinth + a spike.
+                let h = 9.0 * rise;
+                geo::push_box(&mut s.lit, [cx, gy + 0.25, cz], [1.7, 0.25, 1.7], 0.0, stone);
+                geo::push_box(&mut s.lit, [cx, gy + 0.5 + h * 0.5, cz], [0.7, h * 0.5, 0.7], 0.0, stone);
+                geo::push_box(&mut s.lit, [cx, gy + 0.5 + h, cz], [0.45, 0.5, 0.45], 0.0, trim);
+                geo::push_cone(&mut s.lit, cx, gy + 0.5 + h + 1.0, cz, 0.5, 2.0 * rise, 6, [0.95, 0.82, 0.35, 1.0]);
+                cap = [cx, gy + 0.5 + h + 3.0 * rise, cz];
+            }
+            WonderKind::Rotunda => {
+                // a grand rotunda: a wide cylindrical drum ringed by pillars + a cupola.
+                let drum_h = 3.2 * rise;
+                let r = 3.0f32;
+                geo::push_box(&mut s.lit, [cx, gy + 0.2, cz], [r + 0.4, 0.2, r + 0.4], 0.0, stone);
+                // drum (octagonal-ish via a low-seg cone-as-cylinder is overkill; a box drum reads fine)
+                geo::push_box(&mut s.lit, [cx, gy + 0.4 + drum_h * 0.5, cz], [r, drum_h * 0.5, r], 0.0, stone);
+                // a ring of pillars around the drum.
+                let np = 8;
+                for i in 0..np {
+                    let a = i as f32 / np as f32 * std::f32::consts::TAU;
+                    let px = cx + a.cos() * (r + 0.5);
+                    let pz = cz + a.sin() * (r + 0.5);
+                    geo::push_box(&mut s.lit, [px, gy + 0.4 + drum_h * 0.5, pz], [0.22, drum_h * 0.5, 0.22], 0.0, trim);
+                }
+                // the cupola.
+                let dome_y = gy + 0.4 + drum_h;
+                geo::push_cone(&mut s.lit, cx, dome_y, cz, r * 0.95, 2.2 * rise, 12, trim);
+                cap = [cx, dome_y + 2.4 * rise, cz];
+                geo::push_box(&mut s.lit, [cx, cap[1] - 0.15, cz], [0.3 * rise, 0.3 * rise, 0.3 * rise], 0.0, [0.95, 0.82, 0.35, 1.0]);
+            }
+        }
+        // a bright crowning glow on the wonder's apex (breathing) — a beacon visible afar.
+        let pulse = 0.6 + 0.4 * (time * 0.8 + v.id as f32).sin();
+        glow(s, cap, 1.6, Color::hex(v.hue, 0.6 * pulse));
+        glow(s, cap, 0.6, Color::hex(0xfff0c0, 0.85 * pulse));
+    }
+
+    // ---- SPACE AGE: a LAUNCHPAD at every Space-era village, and any ROCKET aloft.
+    for v in &world.villages {
+        if v.population == 0 || v.era != crate::sim::Era::Space {
+            continue;
+        }
+        // the launchpad sits a few cells off the village centre so it doesn't collide with
+        // the wonder/standard: a dark concrete pad + a slim gantry tower.
+        let (cx, cz) = (v.center.x as f32 + 4.0, v.center.y as f32 + 4.0);
+        let gy = g(cx, cz);
+        geo::push_box(&mut s.lit, [cx, gy + 0.12, cz], [1.6, 0.12, 1.6], 0.0, [0.22, 0.23, 0.26, 1.0]);
+        // pad markings (a brighter inner square).
+        geo::push_box(&mut s.lit, [cx, gy + 0.20, cz], [1.0, 0.04, 1.0], 0.0, [0.55, 0.55, 0.20, 1.0]);
+        // gantry tower beside the pad.
+        let gx = cx + 1.3;
+        for st in 0..5 {
+            let yy = gy + 0.3 + st as f32 * 0.7;
+            geo::push_box(&mut s.lit, [gx, yy, cz], [0.08, 0.35, 0.08], 0.0, [0.5, 0.52, 0.56, 1.0]);
+        }
+        geo::push_box(&mut s.lit, [gx, gy + 3.8, cz], [0.08, 0.05, 0.5], 0.0, [0.5, 0.52, 0.56, 1.0]);
+        // a faint hazard glow on the pad.
+        glow(s, [cx, gy + 0.3, cz], 0.7, Color::hex(0xffcf4e, 0.18));
+    }
+
+    // ---- ROCKETS in flight: each rises on a plume and ARCS toward the moon, then fades.
+    for r in &world.rockets {
+        let age = world.tick.saturating_sub(r.launched) as f32;
+        let total = 240.0; // ROCKET_FLIGHT_TICKS
+        let ph = (age / total).clamp(0.0, 1.0); // 0=liftoff … 1=arrived
+        let (px, pz) = (r.pad.x as f32, r.pad.y as f32);
+        let gy = g(px, pz);
+        // arc: interpolate ground pad → moon, lofted on a parabola so it rises then crosses.
+        // bearing jitter rotates the launch line slightly around vertical-toward-moon.
+        let to_moon = [moon_pos[0] - px, moon_pos[2] - pz];
+        let mlen = (to_moon[0] * to_moon[0] + to_moon[1] * to_moon[1]).sqrt().max(0.001);
+        let dir = [to_moon[0] / mlen, to_moon[1] / mlen];
+        // rotate horizontal direction by the per-rocket bearing for variety.
+        let (cb, sb) = (r.bearing.cos(), r.bearing.sin());
+        let hd = [dir[0] * cb - dir[1] * sb, dir[0] * sb + dir[1] * cb];
+        // ease-out so it leaps off the pad then sails: position along the line.
+        let along = ph * ph * (3.0 - 2.0 * ph); // smoothstep ease
+        let rx = px + hd[0] * mlen * along;
+        let rz = pz + hd[1] * mlen * along;
+        // altitude: a high parabolic loft toward the moon's altitude.
+        let apex = moon_pos[1];
+        let ry = gy + 1.0 + (apex - gy) * (along.powf(0.75));
+        // rocket orientation: tilt from vertical toward the flight direction as it arcs.
+        // (we render a simple upright-ish body; tilt via a small lean on the nose.)
+        let lean = ph * 0.5;
+        let body_c = [0.92, 0.93, 0.96, 1.0];
+        // body: a slim white cylinder (approximated by a tall thin box).
+        geo::push_box(&mut s.lit, [rx, ry, rz], [0.18, 0.55, 0.18], 0.0, body_c);
+        // a coloured band in the village hue.
+        geo::push_box(&mut s.lit, [rx, ry + 0.2, rz], [0.19, 0.12, 0.19], 0.0, Color::hex(world.villages.get(r.village as usize).map(|v| v.hue).unwrap_or(0xffffff), 1.0).0);
+        // nose cone.
+        geo::push_cone(&mut s.lit, rx, ry + 0.55, rz, 0.18, 0.5, 6, [0.85, 0.2, 0.18, 1.0]);
+        // three little fins at the base.
+        for i in 0..3 {
+            let a = i as f32 / 3.0 * std::f32::consts::TAU + lean;
+            geo::push_box(&mut s.lit, [rx + a.cos() * 0.22, ry - 0.5, rz + a.sin() * 0.22], [0.1, 0.18, 0.04], a, [0.8, 0.2, 0.18, 1.0]);
+        }
+        // EXHAUST PLUME: a bright hot core just under the rocket + a trailing tail of smoke
+        // back down toward the pad along the arc, fading with distance. Reads as thrust.
+        let plume_n = 9;
+        for i in 0..plume_n {
+            let f = i as f32 / plume_n as f32;
+            // sample a point behind the rocket along the arc (toward the pad).
+            let back_ph = (ph - f * 0.12).max(0.0);
+            let ba = back_ph * back_ph * (3.0 - 2.0 * back_ph);
+            let bx = px + hd[0] * mlen * ba;
+            let bz = pz + hd[1] * mlen * ba;
+            let by = gy + 1.0 + (apex - gy) * (ba.powf(0.75));
+            let flick = 0.7 + 0.3 * (time * 18.0 + i as f32).sin();
+            let hot = 1.0 - f;
+            // hot near the nozzle (orange/white), cooling to grey smoke down the trail.
+            let col = if f < 0.35 {
+                Color::hex(0xffd060, (0.7 * hot) * flick)
+            } else {
+                Color::hex(0xb8b8c0, (0.34 * (1.0 - f)) * flick)
+            };
+            glow(s, [bx, by - 0.55, bz], 0.5 + f * 0.9, col);
+        }
+        // a bright muzzle flash right at the nozzle for the "lift" punch.
+        glow(s, [rx, ry - 0.7, rz], 1.1, Color::hex(0xfff0b0, 0.8 * (1.0 - ph * 0.5)));
+        // a faint smoke pillar still hanging at the pad just after liftoff.
+        if ph < 0.4 {
+            let s_a = (0.4 - ph) / 0.4;
+            for k in 0..4 {
+                let yy = gy + 0.4 + k as f32 * 0.5;
+                glow(s, [px, yy, pz], 0.7, Color::hex(0xc8c8d0, 0.3 * s_a));
+            }
+        }
+    }
+}
+
 /// A wolf: a grey low-slung quadruped — body, head, tail, four stub legs.
 fn push_wolf(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, time: f32) {
     let lope = (time * 9.0).sin() * 0.06;
@@ -2217,7 +2423,54 @@ fn inspector(s: &mut Scene, world: &GameWorld, selected: Option<usize>, sw: f32,
                     (String::new(), MUTED)
                 };
                 s.text(format!("{stat}{extra}"), px + 36.0, yy, 10.5, Color::hex(scol, 0.9));
-                yy += 19.0;
+                yy += 16.0;
+                // CIVILIZATION CAPSTONE (Sprint 3): the village's LEADER, its formalized
+                // TREATIES (named alliances), and its WONDER. Off a civ world these are all
+                // empty, so the panel is exactly the incumbent (society) layout.
+                if world.civ {
+                    if !v.leader_name.is_empty() {
+                        s.text(
+                            format!("Leader: {}", v.leader_name),
+                            px + 36.0,
+                            yy,
+                            10.5,
+                            Color::hex(0xd9c79a, 0.92),
+                        );
+                        yy += 15.0;
+                    }
+                    // named treaties this village has signed.
+                    for t in &world.treaties {
+                        let other = if t.a == v.id {
+                            Some(t.b)
+                        } else if t.b == v.id {
+                            Some(t.a)
+                        } else {
+                            None
+                        };
+                        if let Some(o) = other {
+                            let oname = &world.villages[o as usize].name;
+                            s.text(
+                                format!("⚜ {} (w/ {oname})", t.name),
+                                px + 36.0,
+                                yy,
+                                10.0,
+                                Color::hex(0x9ee6b4, 0.9),
+                            );
+                            yy += 14.0;
+                        }
+                    }
+                    if let Some(w) = &v.wonder {
+                        s.text(
+                            format!("★ Wonder: {}", w.name),
+                            px + 36.0,
+                            yy,
+                            10.0,
+                            Color::hex(0xffd86a, 0.95),
+                        );
+                        yy += 14.0;
+                    }
+                }
+                yy += 6.0;
             }
         }
         // AT WAR (Civilization Sprint 2): list every active war — the two settlements,

@@ -179,6 +179,32 @@ const WAR_COOLDOWN: u64 = 2200;
 /// (its remaining motion stays its own — warriors still live, they just march to war).
 const WAR_MARCH_PULL: f32 = 0.85;
 
+// --- CIVILIZATION CAPSTONE (Civilization Sprint 3): politics & diplomacy, WONDERS, and
+// the SPACE AGE (launchpads → rockets to the moon). These are WORLD systems layered on
+// the existing society/eras (NOT cognitive faculties — no genome genes, N_GENES stays
+// 35). All of it is gated behind the live-only `civ` flag and every stochastic choice
+// (wonder/treaty naming, launch jitter) draws from a dedicated `civ_rng`, never the main
+// stream, so a world that never arms civ (every harness/AC/proof path) is byte-identical.
+// Politics/wonders ride the slow society cadence; rockets animate per tick once aloft. ---
+/// Research a village must bank to raise its monumental WONDER. Set in the Iron→Industrial
+/// band so a mid-advanced settlement earns one (a real civilizational milestone), not
+/// every village and not only at Space. One wonder per village, permanent once raised.
+const WONDER_RESEARCH: f32 = 230.0;
+/// A treaty (named ALLIANCE/PACT) is forged when a pair has sat at `Allied` standing
+/// (affinity ≥ this, the existing Allied bucket floor) continuously for `TREATY_TICKS`.
+const TREATY_AFFINITY: f32 = 0.55;
+/// Ticks a pair must hold Allied standing before their alliance is FORMALIZED into a named
+/// treaty (≈ several society evaluations) — a treaty is a *sustained* friendship, not a
+/// passing warm spell. A treaty dissolves if the pair falls out of the Allied band.
+const TREATY_TICKS: u64 = 360;
+/// Once a village reaches the SPACE AGE it builds a LAUNCHPAD and thereafter launches a
+/// ROCKET every this-many ticks — bounded so the launch is a recurring SPECTACLE, not a
+/// constant stream. ≈ a couple of minutes at the live speed between launches.
+const LAUNCH_PERIOD: u64 = 900;
+/// Ticks a rocket spends in flight (ascent + arc toward the moon) before it fades — long
+/// enough to actually WATCH it rise and arc across the sky.
+const ROCKET_FLIGHT_TICKS: u64 = 240;
+
 /// Minimal HSV→RGB (each channel 0..255) for spreading village identity hues evenly
 /// around the colour wheel. `h,s,v` in `[0,1]`.
 fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
@@ -598,6 +624,63 @@ pub struct Village {
     /// Buildings counted nearest this village's centre at the last eval (diag / render
     /// of the building-count research factor). Zero unless `eras` is on.
     pub buildings: usize,
+
+    // ---- civilization capstone (Civilization Sprint 3) — only ever set/read behind the
+    // world's `civ` flag; on a non-civ world these stay at their defaults and are read by
+    // nothing, so seeded worlds are byte-identical. ----
+    /// The village's LEADER: a specific named living member (the eldest — lowest
+    /// `born_tick`), refreshed each society eval so the title passes on as elders die.
+    /// `None` until civ is armed (or while the village is empty).
+    pub leader: Option<EntityId>,
+    /// The leader's display name, copied at selection time for the HUD (so the panel
+    /// needn't re-scan the roster). Empty unless `civ` and the village is peopled.
+    pub leader_name: String,
+    /// The monumental WONDER this village has raised, once it banked `WONDER_RESEARCH`.
+    /// `None` until then; permanent once set (a civilization keeps its monument). The
+    /// renderer raises a great landmark at the village centre from this.
+    pub wonder: Option<Wonder>,
+}
+
+/// A village's monumental WONDER (Civilization Sprint 3): a single great landmark raised
+/// at the settlement centre once it banks enough research — a civilizational achievement,
+/// visible across the island. The KIND drives which silhouette the renderer raises; the
+/// `name` is a warm proper name drawn off the `civ_rng`. Live-only (civ-gated).
+#[derive(Clone, Debug)]
+pub struct Wonder {
+    /// Which monument silhouette to raise (a stable per-village choice).
+    pub kind: WonderKind,
+    /// The wonder's proper name (e.g. "The Great Spire of Thornhollow").
+    pub name: String,
+    /// The tick it was raised (for a rise-from-the-ground render ramp).
+    pub raised: u64,
+}
+
+/// The silhouette family of a [`Wonder`] — each reads as a distinct great monument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WonderKind {
+    /// A stepped great PYRAMID / ziggurat — broad tiered stone.
+    Pyramid,
+    /// A soaring SPIRE / obelisk — a tall slender monument.
+    Spire,
+    /// A grand domed MONUMENT — a wide rotunda crowned with a cupola.
+    Rotunda,
+}
+
+/// A ROCKET in flight (Civilization Sprint 3, Space Age): launched periodically from a
+/// Space-era village's launchpad, it rises on a plume and arcs toward the moon, then
+/// fades. Pure spectacle — it touches no mind cognition. Live-only (civ-gated); all
+/// launch timing/jitter is off the dedicated `civ_rng`, so seeded worlds are unaffected.
+#[derive(Clone, Debug)]
+pub struct Rocket {
+    /// The launching village (for the pad position + the HUD).
+    pub village: u8,
+    /// Ground launch position (the village centre / its launchpad).
+    pub pad: Pos,
+    /// The tick it lifted off (drives the flight phase 0..1 over `ROCKET_FLIGHT_TICKS`).
+    pub launched: u64,
+    /// A small per-rocket heading jitter (radians) off `civ_rng`, so successive launches
+    /// arc along slightly different lines toward the moon (variety, never the same shot).
+    pub bearing: f32,
 }
 
 /// The standing RELATION between two villages (Sprint 4 society). A single signed
@@ -644,6 +727,22 @@ impl Relation {
             _ => RelationKind::Neutral,
         }
     }
+}
+
+/// A formalized TREATY (Civilization Sprint 3): a named ALLIANCE/PACT that crystallizes
+/// when a village pair has held `Allied` standing continuously for `TREATY_TICKS`. It is
+/// derived from — and dissolves with — the underlying [`Relation`] affinity, so a treaty
+/// is the *legible, named* face of a sustained emergent alliance, never a separate force.
+/// Live-only (civ-gated); the seeded harness never forms one, so it perturbs nothing.
+#[derive(Clone, Debug)]
+pub struct Treaty {
+    /// The two signatory villages, `a < b` (same convention as [`Relation`]).
+    pub a: u8,
+    pub b: u8,
+    /// The treaty's proper name (e.g. "The Pact of Ashreach").
+    pub name: String,
+    /// The tick it was signed (for the HUD / a render flourish).
+    pub signed: u64,
 }
 
 /// An active WAR between two villages (Civilization Sprint 2). Born when a soured pair
@@ -860,6 +959,33 @@ pub struct GameWorld {
     /// Dedicated warfare RNG. ALL muster / strike-coin draws come from here so the main
     /// stream is never perturbed. Seeded when `war` is turned on.
     war_rng: Rng,
+    /// LIVE-ONLY CIVILIZATION switch (Civilization Sprint 3): politics & diplomacy
+    /// (named LEADERS + formalized TREATIES), WONDERS (a monumental landmark per advanced
+    /// village), and the SPACE AGE (launchpads → ROCKETS that arc to the moon). Default
+    /// `false` so every AC/proof/fitness run is byte-identical: no leaders, no treaties,
+    /// no wonders, no rockets, and ZERO new RNG draws. When `true` (the live showcase /
+    /// civ diag only) the society gains these layered world systems. Requires `society`
+    /// (they live on villages); rides the slow society cadence (rockets animate per tick).
+    /// ALL civ stochasticity draws from [`civ_rng`], never the main `rng`.
+    pub civ: bool,
+    /// Formalized treaties, one [`Treaty`] per allied-long-enough pair. Empty unless `civ`.
+    pub treaties: Vec<Treaty>,
+    /// Per unordered village pair `(a < b)`: the tick that pair *entered* the Allied band
+    /// (for the `TREATY_TICKS` sustained-alliance test). Cleared when it falls out. Empty
+    /// unless `civ`.
+    allied_since: std::collections::HashMap<(u8, u8), u64>,
+    /// Rockets currently in flight (one per active launch). Empty unless `civ`. Bounded:
+    /// a village launches at most once per `LAUNCH_PERIOD` and a rocket fades after
+    /// `ROCKET_FLIGHT_TICKS`, so this stays tiny.
+    pub rockets: Vec<Rocket>,
+    /// Running tallies for the civ diag (live-only): wonders raised, treaties ever
+    /// signed, and rockets ever launched.
+    pub wonders_raised: u32,
+    pub treaties_signed: u32,
+    pub rockets_launched: u32,
+    /// Dedicated CIVILIZATION RNG. ALL wonder/treaty naming + launch-bearing jitter draws
+    /// come from here so the main stream is never perturbed. Seeded when `civ` is armed.
+    civ_rng: Rng,
     rng: Rng,
     next_id: u32,
     /// Dedicated counter for sheep/horse ids, drawn from a HIGH range so wildlife never
@@ -1342,6 +1468,17 @@ impl GameWorld {
             wars_resolved: 0,
             war_casualties: 0,
             war_rng: Rng::new(0),
+            // civilization capstone: off by default (the incumbent). The flag, side-RNG,
+            // treaties, allied-since clocks, rockets, and tallies are inert until
+            // `set_civ(true)` reseeds + arms them live-only.
+            civ: false,
+            treaties: Vec::new(),
+            allied_since: std::collections::HashMap::new(),
+            rockets: Vec::new(),
+            wonders_raised: 0,
+            treaties_signed: 0,
+            rockets_launched: 0,
+            civ_rng: Rng::new(0),
             rng,
             next_id,
             wild_id_next: 0,
@@ -1706,6 +1843,9 @@ impl GameWorld {
                 research: 0.0,
                 era: Era::Stone,
                 buildings: 0,
+                leader: None,
+                leader_name: String::new(),
+                wonder: None,
             })
             .collect();
 
@@ -1770,6 +1910,255 @@ impl GameWorld {
         // dedicated, dimension-derived seed so two same-sized worlds get the same wars,
         // independent of how many main-stream draws have happened.
         self.war_rng = Rng::new(0x0057_A12Fu64 ^ self.w as u64 ^ ((self.h as u64) << 28));
+    }
+
+    /// Arm the LIVE-ONLY CIVILIZATION CAPSTONE (Civilization Sprint 3): politics &
+    /// diplomacy (named LEADERS + formalized TREATIES on top of the existing relation
+    /// affinity), WONDERS (a monumental landmark per advanced village), and the SPACE AGE
+    /// (a launchpad + periodic ROCKETS that arc to the moon). Requires `society` (these
+    /// live on villages) — a no-op otherwise. ALL civ stochasticity draws from a
+    /// dedicated, dimension-derived side-RNG, so a world that never arms civ (every
+    /// harness/AC/proof path) is byte-identical. Off clears all civ state.
+    pub fn set_civ(&mut self, on: bool) {
+        self.civ = on && self.society;
+        if !self.civ {
+            self.treaties.clear();
+            self.allied_since.clear();
+            self.rockets.clear();
+            for v in &mut self.villages {
+                v.leader = None;
+                v.leader_name = String::new();
+                v.wonder = None;
+            }
+            return;
+        }
+        // dedicated, dimension-derived seed (distinct constant from soc/war), so two
+        // same-sized worlds get the same civ, independent of main-stream draws.
+        self.civ_rng = Rng::new(0x00C1_412Eu64 ^ self.w as u64 ^ ((self.h as u64) << 24));
+    }
+
+    /// CAPTURE SEAM (live-only): fast-forward every peopled village's banked research to
+    /// the threshold of era rank `era` (0=Stone … 4=Space), then refresh leaders / raise
+    /// wonders / form treaties so a headless screenshot can show the late-game civilization
+    /// without an impractically deep warm. Only mutates the civ/eras side state (research
+    /// is a village field, not a mind-cognition value); draws nothing from the main RNG, so
+    /// it cannot perturb a seeded trajectory — and the harness never calls it anyway.
+    pub fn advance_research_to_era(&mut self, era: usize) {
+        if !self.eras {
+            return;
+        }
+        let rank = era.min(ERA_THRESHOLDS.len() - 1);
+        // park research a hair above the target rung so the village sits firmly in `era`.
+        let target = ERA_THRESHOLDS[rank] + 1.0;
+        for v in &mut self.villages {
+            if v.population > 0 {
+                v.research = v.research.max(target);
+                v.era = era_for_research(v.research);
+            }
+        }
+        // immediately materialize the civ consequences of the new tech standing.
+        if self.civ {
+            self.update_leaders();
+            self.raise_wonders();
+        }
+    }
+
+    /// CAPTURE SEAM (live-only): force every Space-era village to launch a rocket NOW
+    /// (ignoring the cadence), so a screenshot can catch a rocket mid-flight on demand.
+    /// Off `civ_rng` like a real launch; the harness never calls it.
+    pub fn force_launch(&mut self) {
+        if !self.civ {
+            return;
+        }
+        let now = self.tick;
+        let mut to_launch: Vec<(u8, Pos)> = Vec::new();
+        for v in &self.villages {
+            if v.population > 0 && v.era == Era::Space && !self.rockets.iter().any(|r| r.village == v.id) {
+                to_launch.push((v.id, v.center));
+            }
+        }
+        for (village, pad) in to_launch {
+            let bearing = (self.civ_rng.next_f32() - 0.5) * 0.8;
+            self.rockets.push(Rocket { village, pad, launched: now, bearing });
+            self.rockets_launched += 1;
+        }
+    }
+
+    /// CAPTURE SEAM (live-only): backdate every in-flight rocket's launch tick to ~40% of
+    /// its flight so it is caught MID-ARC in the very next frame (paired with `force_launch`
+    /// for the `?launch=1` screenshot seam). Pure render-state nudge; never touched by harness.
+    pub fn put_rockets_mid_flight(&mut self) {
+        // ~18% of flight: high enough off the pad to read as "launched" with a strong
+        // plume, low enough that the rocket + its launchpad still share a tight frame.
+        let back = (ROCKET_FLIGHT_TICKS as f32 * 0.18) as u64;
+        let now = self.tick;
+        for r in &mut self.rockets {
+            r.launched = now.saturating_sub(back);
+        }
+    }
+
+    /// Step the CIVILIZATION layer (Civilization Sprint 3). Two cadences: POLITICS,
+    /// TREATIES and WONDERS update on the slow society cadence (cheap, social processes);
+    /// the SPACE AGE launch check also runs there, but rockets ANIMATE every tick (their
+    /// flight phase advances with `tick`). A no-op when `civ` is off (zero draws), so
+    /// non-civ worlds stay byte-identical. All randomness is off `civ_rng`.
+    fn step_civ(&mut self) {
+        if !self.civ || self.villages.is_empty() {
+            return;
+        }
+        // --- per-tick: retire rockets whose flight has completed (pure render state) ---
+        let now = self.tick;
+        self.rockets
+            .retain(|r| now.saturating_sub(r.launched) < ROCKET_FLIGHT_TICKS);
+
+        // the heavy social work runs on the society cadence only.
+        if self.tick % SOCIETY_PERIOD != 0 {
+            return;
+        }
+        self.update_leaders();
+        self.update_treaties();
+        self.raise_wonders();
+        self.launch_rockets();
+    }
+
+    /// Refresh each peopled village's LEADER: the eldest living member (lowest
+    /// `born_tick`, ties broken by id for determinism). Title passes on as elders die.
+    fn update_leaders(&mut self) {
+        let k = self.villages.len();
+        let mut best: Vec<Option<(u64, EntityId)>> = vec![None; k];
+        for a in self.agents.iter().filter(|a| a.alive) {
+            let Some(v) = a.village else { continue };
+            let vi = v as usize;
+            let key = (a.born_tick, a.id);
+            if best[vi].map(|(bt, bid)| key < (bt, bid)).unwrap_or(true) {
+                best[vi] = Some(key);
+            }
+        }
+        for (vi, v) in self.villages.iter_mut().enumerate() {
+            match best[vi] {
+                Some((_, id)) => {
+                    v.leader = Some(id);
+                    // copy the leader's display name for the HUD.
+                    if let Some(a) = self.agents.iter().find(|a| a.id == id) {
+                        v.leader_name = a.name.clone();
+                    }
+                }
+                None => {
+                    v.leader = None;
+                    v.leader_name.clear();
+                }
+            }
+        }
+    }
+
+    /// Form / dissolve formalized TREATIES from the underlying relation affinity. A pair
+    /// that has held `Allied` standing continuously for `TREATY_TICKS` gets a named PACT;
+    /// a pair that falls out of the Allied band loses its treaty (and its clock resets),
+    /// so a treaty is the legible face of a *sustained* emergent alliance. Off `civ_rng`
+    /// for the name draw only.
+    fn update_treaties(&mut self) {
+        let now = self.tick;
+        // snapshot which pairs are currently Allied-enough (immutable scan first).
+        let allied: Vec<(u8, u8, bool)> = self
+            .relations
+            .iter()
+            .map(|r| (r.a, r.b, r.affinity >= TREATY_AFFINITY))
+            .collect();
+        // pairs that just earned a treaty (held Allied long enough, none yet).
+        let mut to_sign: Vec<(u8, u8)> = Vec::new();
+        for &(a, b, is_allied) in &allied {
+            let pair = (a, b);
+            if is_allied {
+                let since = *self.allied_since.entry(pair).or_insert(now);
+                let has = self.treaties.iter().any(|t| t.a == a && t.b == b);
+                if !has && now.saturating_sub(since) >= TREATY_TICKS {
+                    to_sign.push(pair);
+                }
+            } else {
+                // fell out of the Allied band: reset the clock + drop any treaty.
+                self.allied_since.remove(&pair);
+                self.treaties.retain(|t| !(t.a == a && t.b == b));
+            }
+        }
+        for (a, b) in to_sign {
+            let name = Self::treaty_name(&mut self.civ_rng, &self.villages, a, b);
+            self.treaties.push(Treaty { a, b, name, signed: now });
+            self.treaties_signed += 1;
+        }
+    }
+
+    /// Raise a WONDER at any peopled village that has banked `WONDER_RESEARCH` and has
+    /// none yet — a one-time civilizational milestone. The kind is a stable per-village
+    /// choice (off the village id) and the name is drawn off `civ_rng`.
+    fn raise_wonders(&mut self) {
+        let now = self.tick;
+        let mut to_raise: Vec<(usize, WonderKind, String)> = Vec::new();
+        for (vi, v) in self.villages.iter().enumerate() {
+            if v.wonder.is_none() && v.population > 0 && v.research >= WONDER_RESEARCH {
+                // stable kind per village so two same-sized worlds match; varied across
+                // villages so the island shows different monuments.
+                let kind = match v.id % 3 {
+                    0 => WonderKind::Pyramid,
+                    1 => WonderKind::Spire,
+                    _ => WonderKind::Rotunda,
+                };
+                let name = Self::wonder_name(&mut self.civ_rng, kind, &v.name);
+                to_raise.push((vi, kind, name));
+            }
+        }
+        for (vi, kind, name) in to_raise {
+            self.villages[vi].wonder = Some(Wonder { kind, name, raised: now });
+            self.wonders_raised += 1;
+        }
+    }
+
+    /// SPACE AGE: every `LAUNCH_PERIOD` ticks, each Space-era village (its launchpad) fires
+    /// a ROCKET that arcs to the moon. Bounded — one rocket per village per period, with a
+    /// small per-launch bearing jitter off `civ_rng` so successive shots vary. A village
+    /// never has more than one rocket aloft at a time.
+    fn launch_rockets(&mut self) {
+        let now = self.tick;
+        let mut to_launch: Vec<(u8, Pos)> = Vec::new();
+        for v in &self.villages {
+            if v.population == 0 || v.era != Era::Space {
+                continue;
+            }
+            // bounded cadence; phase by village id so launches stagger rather than salvo.
+            let phase = (now + v.id as u64 * (LAUNCH_PERIOD / 4)) % LAUNCH_PERIOD;
+            if phase != 0 {
+                continue;
+            }
+            if self.rockets.iter().any(|r| r.village == v.id) {
+                continue; // already one aloft from this pad
+            }
+            to_launch.push((v.id, v.center));
+        }
+        for (village, pad) in to_launch {
+            let bearing = (self.civ_rng.next_f32() - 0.5) * 0.8; // ±0.4 rad spread
+            self.rockets.push(Rocket { village, pad, launched: now, bearing });
+            self.rockets_launched += 1;
+        }
+    }
+
+    /// A warm, deterministic TREATY name off the civ side-RNG (so the world stays
+    /// reproducible). Combines a treaty-word with one signatory's name.
+    fn treaty_name(rng: &mut Rng, villages: &[Village], a: u8, b: u8) -> String {
+        const FORMS: [&str; 5] = ["Pact", "Accord", "Concord", "League", "Covenant"];
+        let f = FORMS[rng.below(FORMS.len())];
+        let seat = if rng.chance(0.5) { a } else { b } as usize;
+        let town = villages.get(seat).map(|v| v.name.as_str()).unwrap_or("the Vale");
+        format!("The {f} of {town}")
+    }
+
+    /// A warm, deterministic WONDER name off the civ side-RNG, themed to the silhouette.
+    fn wonder_name(rng: &mut Rng, kind: WonderKind, town: &str) -> String {
+        let (form, adjs): (&str, [&str; 4]) = match kind {
+            WonderKind::Pyramid => ("Pyramid", ["Great", "Golden", "Eternal", "Sun"]),
+            WonderKind::Spire => ("Spire", ["Sky", "Great", "Silver", "Star"]),
+            WonderKind::Rotunda => ("Rotunda", ["Grand", "Crystal", "Hallowed", "Dawn"]),
+        };
+        let adj = adjs[rng.below(adjs.len())];
+        format!("The {adj} {form} of {town}")
     }
 
     /// Step WARFARE one tick (Civilization Sprint 2). Two cadences: at each society
@@ -2376,6 +2765,16 @@ impl GameWorld {
         }
         let (lo, hi) = (a.min(b), a.max(b));
         self.relations.iter().find(|r| r.a == lo && r.b == hi)
+    }
+
+    /// The formalized TREATY between two villages, if any (live-only inspector / render).
+    /// `None` off a civ world or when the pair has no standing treaty.
+    pub fn treaty_between(&self, a: u8, b: u8) -> Option<&Treaty> {
+        if a == b {
+            return None;
+        }
+        let (lo, hi) = (a.min(b), a.max(b));
+        self.treaties.iter().find(|t| t.a == lo && t.b == hi)
     }
 
     /// A living mind's village, by agent index (live-only inspector / render).
@@ -3815,6 +4214,14 @@ impl GameWorld {
         if self.war {
             self.step_warfare();
             self.reap_dead();
+        }
+        // CIVILIZATION CAPSTONE (live-only): refresh village LEADERS, form/dissolve named
+        // TREATIES from the sustained alliances, raise WONDERS at advanced villages, and
+        // run the SPACE AGE launch cadence (rockets arc to the moon); rockets also animate
+        // each tick here. A no-op when `civ` is off (zero draws), so every seeded harness
+        // trajectory is byte-identical. Requires `society`.
+        if self.civ {
+            self.step_civ();
         }
         // pheromone evaporates so worn paths reflect *recent* success and fade as
         // routes go stale (no RNG; a no-op when the field is all zero).
