@@ -182,6 +182,191 @@ pub fn push_cone(
     }
 }
 
+// --- character figures (villagers) ----------------------------------------
+//
+// A villager is a real little low-poly person — torso + head + two legs + two
+// arms — built from the same flat-shaded boxes as the rest of the world, but
+// **articulated**: limbs swing about their joints so the figure WALKS when it is
+// moving and stands when it is still. Everything is authored in the villager's
+// LOCAL frame `(fwd, side, up)` — `fwd` along the nose, `side` to its left, `up`
+// height — then rotated by `heading` into world. Animation is pure: it is a
+// function of `phase` (a per-villager logical clock) and `stride` (0 idle → 1
+// striding), so the gait is deterministic and each villager steps on its own beat.
+
+/// One articulated body part of a character: a box whose *joint* sits at local
+/// `(jf, js, ju)` (fwd/side/up) and which swings `pitch` radians about the side
+/// axis (a fore/aft leg/arm swing) and leans `roll` radians about the fwd axis.
+/// `len_down` is how far the part extends below the joint (a limb hangs down),
+/// `half` its half-extents. The local offset is then rotated by `heading` and
+/// placed at world `(x, gy+? , z)`. Flat-shaded, so the box self-lights.
+#[allow(clippy::too_many_arguments)]
+fn push_limb(
+    out: &mut Vec<LitVertex>,
+    x: f32,
+    gy: f32,
+    z: f32,
+    heading: f32,
+    sc: f32,
+    joint: [f32; 3],   // (fwd, side, up) of the joint, pre-scale
+    pitch: f32,        // swing about side axis (fore/aft)
+    len_down: f32,     // how far the limb reaches below its joint (pre-scale)
+    half: [f32; 3],    // limb half-extents (pre-scale)
+    color: [f32; 4],
+) {
+    // limb centre in the local fwd/up plane: drop `len_down*0.5` from the joint,
+    // then rotate that drop vector by `pitch` about the side axis so the foot
+    // swings forward/back while staying attached at the joint.
+    let (sp, cp) = pitch.sin_cos();
+    let r = len_down * 0.5;
+    let lf = joint[0] + sp * r; // pitch rotates (0,-r) in (fwd,up) → (sp*r, -cp*r)
+    let lu = joint[2] - cp * r;
+    let ls = joint[1];
+    // rotate the local (fwd,side) offset by heading into world (x,z). heading 0 ⇒
+    // nose toward +x; side is 90° left of the nose.
+    let (shh, chh) = heading.sin_cos();
+    let (lf, ls, lu) = (lf * sc, ls * sc, lu * sc);
+    let wx = x + lf * chh - ls * shh;
+    let wz = z + lf * shh + ls * chh;
+    // the box itself is yaw-rotated by heading so it tracks the body, and tilted by
+    // `pitch` so a swung limb visibly angles (a thin box reads the lean).
+    push_box_tilt(out, [wx, gy + lu, wz], [half[0] * sc, half[1] * sc, half[2] * sc], heading, pitch, color);
+}
+
+/// A box rotated by `yaw` about up THEN tilted by `pitch` about its local side
+/// axis — lets an articulated limb both face the heading and angle as it swings.
+fn push_box_tilt(out: &mut Vec<LitVertex>, center: [f32; 3], half: [f32; 3], yaw: f32, pitch: f32, color: [f32; 4]) {
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    // local axes after pitch (about side=+z-local-of-the-figure... we treat fwd=x):
+    // fwd' = (cp, -sp) in (x,y); up' = (sp, cp) in (x,y); side stays.
+    let v = |sx: f32, syy: f32, sz: f32| -> [f32; 3] {
+        // pitch tilt in the fwd(x)/up(y) plane
+        let fx = half[0] * sx;
+        let uy = half[1] * syy;
+        let px = fx * cp + uy * sp;
+        let py = -fx * sp + uy * cp;
+        let pz = half[2] * sz;
+        // yaw about up
+        [center[0] + px * cy - pz * sy, center[1] + py, center[2] + px * sy + pz * cy]
+    };
+    let (a, b, c, d) = (v(-1.0, -1.0, -1.0), v(1.0, -1.0, -1.0), v(1.0, -1.0, 1.0), v(-1.0, -1.0, 1.0));
+    let (e, f, g, h) = (v(-1.0, 1.0, -1.0), v(1.0, 1.0, -1.0), v(1.0, 1.0, 1.0), v(-1.0, 1.0, 1.0));
+    push_quad(out, e, f, g, h, color);
+    push_quad(out, a, b, c, d, color);
+    push_quad(out, a, b, f, e, color);
+    push_quad(out, c, d, h, g, color);
+    push_quad(out, b, c, g, f, color);
+    push_quad(out, d, a, e, h, color);
+}
+
+/// Push a fixed (non-swinging) part at local `(fwd, side, up)`, rotated by heading.
+#[allow(clippy::too_many_arguments)]
+fn push_fixed(
+    out: &mut Vec<LitVertex>,
+    x: f32,
+    gy: f32,
+    z: f32,
+    heading: f32,
+    sc: f32,
+    fwd: f32,
+    side: f32,
+    up: f32,
+    half: [f32; 3],
+    color: [f32; 4],
+) {
+    let (sh, ch) = heading.sin_cos();
+    let (fwd, side, up) = (fwd * sc, side * sc, up * sc);
+    let wx = x + fwd * ch - side * sh;
+    let wz = z + fwd * sh + side * ch;
+    push_box(out, [wx, gy + up, wz], [half[0] * sc, half[1] * sc, half[2] * sc], heading, color);
+}
+
+/// Build a little VILLAGER character at world `(x, gy, z)` facing `heading`.
+///
+/// `sc` scales the whole figure (maturity: children small, adults 1.0). `phase`
+/// is the villager's own logical walk clock (radians) and `stride` ∈ [0,1] is how
+/// hard it is walking (0 ⇒ standing still, no leg swing, no bob). `body` is the
+/// drive colour (the torso, so each mind keeps its colour); `skin` the head/hands.
+///
+/// Articulation: legs swing fore/aft in anti-phase (a believable stride), arms
+/// counter-swing, the torso bobs up + leans a touch into the step, the head sways
+/// gently. Idle, the figure stands with arms at rest. Pure function of the inputs.
+#[allow(clippy::too_many_arguments)]
+pub fn push_villager(
+    out: &mut Vec<LitVertex>,
+    x: f32,
+    gy: f32,
+    z: f32,
+    heading: f32,
+    sc: f32,
+    phase: f32,
+    stride: f32,
+    body: [f32; 4],
+    skin: [f32; 4],
+) {
+    let st = stride.clamp(0.0, 1.0);
+    let (sw, _cw) = phase.sin_cos();
+    // a vertical bob at twice the stride cadence (the body rises on each footfall).
+    let bob = (phase * 2.0).cos() * 0.035 * st;
+    // a subtle forward lean while walking, head sway side-to-side.
+    let lean = 0.10 * st;
+    let head_sway = sw * 0.05 * st;
+    // proportions: children read CUTER with a bigger head. `juv` = how juvenile.
+    let juv = (1.0 - sc).clamp(0.0, 1.0);
+    let head_r = 0.135 * (1.0 + 0.45 * juv); // bigger head when young
+    let leg_len = 0.30 * (1.0 - 0.25 * juv); // shorter legs when young
+    let torso_h = 0.30 * (1.0 - 0.18 * juv);
+    let hip = leg_len; // hip sits a leg-length above the ground
+    let leg_dark = mul(body, 0.55);     // darker drive tone for legs (trousers)
+    let arm_c = mul(body, 0.82);        // slightly lighter sleeves
+
+    // legs — swing fore/aft in anti-phase. Joint at the hip.
+    let leg_swing = sw * 0.55 * st;
+    push_limb(out, x, gy, z, heading, sc, [0.0, 0.075, hip], leg_swing, leg_len, [0.052, leg_len * 0.5, 0.06], leg_dark);
+    push_limb(out, x, gy, z, heading, sc, [0.0, -0.075, hip], -leg_swing, leg_len, [0.052, leg_len * 0.5, 0.06], leg_dark);
+    // little feet at the toe of each leg (swing with the leg so they plant/lift).
+    let (sl, cl) = leg_swing.sin_cos();
+    let foot_f = sl * leg_len; // foot reaches forward by the swung leg length
+    let foot_u = (1.0 - cl) * leg_len; // lifts as it swings
+    push_fixed(out, x, gy, z, heading, sc, foot_f + 0.04, 0.075, (foot_u + 0.03).max(0.025), [0.07, 0.028, 0.09], mul(body, 0.4));
+    push_fixed(out, x, gy, z, heading, sc, -foot_f + 0.04, -0.075, ((1.0 - (-leg_swing).cos()) * leg_len + 0.03).max(0.025), [0.07, 0.028, 0.09], mul(body, 0.4));
+
+    // torso — a tapered drive-coloured trunk that bobs + leans into the walk.
+    let torso_cy = hip + torso_h + bob;
+    push_box_tilt(out, [x, gy + torso_cy * sc, z], [0.13 * sc, torso_h * sc, 0.095 * sc], heading, lean, body);
+    // a slightly narrower shoulder band on top so the figure has a silhouette.
+    push_box_tilt(out, [x + lean.sin() * 0.02, gy + (hip + torso_h * 2.0) * sc + bob * sc, z], [0.145 * sc, 0.05 * sc, 0.10 * sc], heading, lean, mul(body, 1.08));
+
+    // arms — counter-swing to the legs, hung at the shoulders.
+    let arm_swing = -sw * 0.45 * st;
+    let sh_up = hip + torso_h * 2.0 + bob;
+    push_limb(out, x, gy, z, heading, sc, [0.0, 0.165, sh_up], arm_swing, 0.27, [0.04, 0.135, 0.045], arm_c);
+    push_limb(out, x, gy, z, heading, sc, [0.0, -0.165, sh_up], -arm_swing, 0.27, [0.04, 0.135, 0.045], arm_c);
+
+    // head — a rounded pale box riding the shoulders, swaying gently with the gait.
+    let head_cy = hip + torso_h * 2.0 + head_r + 0.04 + bob;
+    push_fixed(out, x, gy, z, heading, sc, lean.sin() * 0.06, head_sway, head_cy, [head_r, head_r * 1.05, head_r], skin);
+    // a small nose nub so the head reads as facing forward (helps in first-person).
+    push_fixed(out, x, gy, z, heading, sc, head_r * 0.9, head_sway, head_cy - head_r * 0.1, [head_r * 0.28, head_r * 0.28, head_r * 0.28], skin);
+}
+
+#[inline]
+fn mul(c: [f32; 4], k: f32) -> [f32; 4] {
+    [c[0] * k, c[1] * k, c[2] * k, c[3]]
+}
+
+/// The height (above the ground) of a villager's crown for scale `sc` — so the
+/// renderer can hover a soul-spark just above the head and place labels. Mirrors
+/// the proportions inside [`push_villager`].
+#[inline]
+pub fn villager_crown(sc: f32) -> f32 {
+    let juv = (1.0 - sc).clamp(0.0, 1.0);
+    let head_r = 0.135 * (1.0 + 0.45 * juv);
+    let leg_len = 0.30 * (1.0 - 0.25 * juv);
+    let torso_h = 0.30 * (1.0 - 0.18 * juv);
+    (leg_len + torso_h * 2.0 + head_r * 2.0 + 0.04) * sc
+}
+
 /// A camera-facing additive quad with UVs in [-1,1]² (soft glow / particle).
 pub fn push_billboard(
     out: &mut Vec<AddVertex>,
@@ -364,6 +549,72 @@ pub mod pieces {
     pub const FRAME: [f32; 4] = [0.22, 0.15, 0.10, 1.0];
     /// Warm glowing window pane (additive glow is layered on top in the view).
     pub const GLASS: [f32; 4] = [1.0, 0.74, 0.34, 1.0];
+
+    // --- ERA MATERIALS (Civilization Sprint 1). Each tech era gives a settlement its
+    // own architecture, and the strongest read is MATERIAL + colour. An [`EraStyle`] is
+    // the per-era palette the era-aware wall/roof pieces below paint with, so a village's
+    // buildings visibly change as it climbs Stone → Bronze → Iron → Industrial → Space.
+
+    /// The per-era material palette for a building. `wall`/`wall2` are the two-tone wall
+    /// stone/timber/brick/metal; `roof`/`roof2` the roof material; `trim` the framing
+    /// accent; `glass` the window pane (warm hearth-glow early, cool electric late).
+    #[derive(Clone, Copy)]
+    pub struct EraStyle {
+        pub wall: [f32; 4],
+        pub wall2: [f32; 4],
+        pub roof: [f32; 4],
+        pub roof2: [f32; 4],
+        pub trim: [f32; 4],
+        pub glass: [f32; 4],
+    }
+
+    /// STONE age: thatch + rough timber + daub — earthy, hand-built, warm.
+    pub const ERA_STONE: EraStyle = EraStyle {
+        wall: [0.50, 0.40, 0.27, 1.0],   // wattle-and-daub clay
+        wall2: [0.40, 0.26, 0.15, 1.0],  // timber post (oak brown)
+        roof: [0.62, 0.47, 0.24, 1.0],   // golden thatch
+        roof2: [0.50, 0.36, 0.18, 1.0],  // thatch shadow
+        trim: [0.34, 0.22, 0.12, 1.0],   // dark timber
+        glass: [1.0, 0.70, 0.30, 1.0],   // a warm fire-lit opening
+    };
+    /// BRONZE age: tidy timber frame on a stone footing — lighter, squarer, worked.
+    pub const ERA_BRONZE: EraStyle = EraStyle {
+        wall: [0.66, 0.56, 0.40, 1.0],   // pale lime-washed daub
+        wall2: [0.46, 0.32, 0.19, 1.0],  // framing timber
+        roof: [0.50, 0.30, 0.16, 1.0],   // dark thatch/shingle
+        roof2: [0.40, 0.24, 0.13, 1.0],
+        trim: [0.52, 0.40, 0.22, 1.0],   // golden framing
+        glass: [1.0, 0.74, 0.36, 1.0],
+    };
+    /// IRON age: dressed stone masonry + terracotta tile — the classic stone village.
+    pub const ERA_IRON: EraStyle = EraStyle {
+        wall: STONE,                     // warm sandstone
+        wall2: STONE_DARK,
+        roof: ROOF,                      // terracotta
+        roof2: [0.46, 0.22, 0.15, 1.0],
+        trim: TIMBER,
+        glass: GLASS,
+    };
+    /// INDUSTRIAL age: red brick + slate, soot-stained — the machine age (chimneys +
+    /// smokestacks are added on top by the renderer for this era).
+    pub const ERA_INDUSTRIAL: EraStyle = EraStyle {
+        wall: [0.55, 0.27, 0.20, 1.0],   // red brick
+        wall2: [0.40, 0.19, 0.14, 1.0],  // shadowed brick
+        roof: [0.30, 0.30, 0.34, 1.0],   // grey slate
+        roof2: [0.22, 0.22, 0.26, 1.0],
+        trim: [0.20, 0.18, 0.18, 1.0],   // iron/soot
+        glass: [1.0, 0.82, 0.46, 1.0],   // gas-lamp warmth
+    };
+    /// SPACE age: brushed metal + glass curtain, lit cool — sleek blocks crowned with
+    /// domes (added by the renderer). The biggest visual leap from the rest.
+    pub const ERA_SPACE: EraStyle = EraStyle {
+        wall: [0.62, 0.66, 0.72, 1.0],   // brushed steel
+        wall2: [0.46, 0.50, 0.58, 1.0],  // shadowed panel
+        roof: [0.56, 0.62, 0.70, 1.0],   // metal deck
+        roof2: [0.42, 0.48, 0.56, 1.0],
+        trim: [0.30, 0.36, 0.44, 1.0],   // dark seam
+        glass: [0.50, 0.82, 1.0, 1.0],   // cool electric blue-white
+    };
 
     #[inline]
     fn tint(c: [f32; 4], k: f32) -> [f32; 4] {
@@ -676,6 +927,169 @@ pub mod pieces {
             push_box(out, [cx + ox, y + lip, cz + oz], [sx, lip, sz], 0.0, tint(STONE, 0.95));
         }
     }
+
+    // --- ERA-AWARE pieces (Civilization Sprint 1) -------------------------------
+    // These mirror the wall/window/door/roof pieces above but paint with a per-era
+    // [`EraStyle`] instead of the fixed constants, so a village's buildings visibly
+    // change material as it climbs the tech ladder. The geometry is the same shape so
+    // the build silhouette is stable; only the materials (and, per-era, added chimneys/
+    // smokestacks/domes via the feature pieces) change.
+
+    /// A solid wall segment, era-styled. Same shape as [`wall_segment`].
+    pub fn wall_segment_era(out: &mut Vec<LitVertex>, cx: f32, y0: f32, cz: f32, face: Facing, height: f32, seed: f32, st: &EraStyle) {
+        let tone = 0.90 + 0.16 * seed;
+        let (nx, nz) = face.nrm();
+        let edge = 0.46;
+        let (px, pz) = (cx + nx * edge, cz + nz * edge);
+        let thick = 0.10;
+        let len = 0.48;
+        let half = if face.runs_ew() { [len, height * 0.5, thick] } else { [thick, height * 0.5, len] };
+        push_box(out, [px, y0 + height * 0.5, pz], half, 0.0, tint(st.wall, tone));
+        // a course/sill band in the second wall tone (timber beam, brick course, seam).
+        let band = if face.runs_ew() { [len + 0.015, 0.045, thick + 0.03] } else { [thick + 0.03, 0.045, len + 0.015] };
+        push_box(out, [px, y0 + height - 0.02, pz], band, 0.0, tint(st.trim, tone));
+    }
+
+    /// A wall segment with a glowing window, era-styled. Returns the pane centre (for
+    /// the additive glow). Same shape as [`wall_window`].
+    pub fn wall_window_era(out: &mut Vec<LitVertex>, cx: f32, y0: f32, cz: f32, face: Facing, height: f32, seed: f32, st: &EraStyle) -> [f32; 3] {
+        let tone = 0.90 + 0.16 * seed;
+        let (nx, nz) = face.nrm();
+        let edge = 0.46;
+        let (px, pz) = (cx + nx * edge, cz + nz * edge);
+        let thick = 0.10;
+        let len = 0.48;
+        let half = if face.runs_ew() { [len, height * 0.5, thick] } else { [thick, height * 0.5, len] };
+        push_box(out, [px, y0 + height * 0.5, pz], half, 0.0, tint(st.wall, tone));
+        let wy = y0 + height * 0.55;
+        let (ww, wh) = (0.18f32, 0.16f32);
+        let out_off = thick + 0.012;
+        let pane_c = [px + nx * out_off, wy, pz + nz * out_off];
+        let (fhalf, phalf) = if face.runs_ew() {
+            ([ww + 0.04, wh + 0.04, 0.02], [ww, wh, 0.015])
+        } else {
+            ([0.02, wh + 0.04, ww + 0.04], [0.015, wh, ww])
+        };
+        push_box(out, [px + nx * (thick + 0.006), wy, pz + nz * (thick + 0.006)], fhalf, 0.0, st.trim);
+        push_box(out, pane_c, phalf, 0.0, st.glass);
+        // glazing-bar cross.
+        let (bv, bh) = if face.runs_ew() {
+            ([0.012, wh, 0.018], [ww, 0.012, 0.018])
+        } else {
+            ([0.018, wh, 0.012], [0.018, 0.012, ww])
+        };
+        push_box(out, pane_c, bv, 0.0, st.trim);
+        push_box(out, pane_c, bh, 0.0, st.trim);
+        let band = if face.runs_ew() { [len + 0.015, 0.045, thick + 0.03] } else { [thick + 0.03, 0.045, len + 0.015] };
+        push_box(out, [px, y0 + height - 0.02, pz], band, 0.0, tint(st.trim, tone));
+        pane_c
+    }
+
+    /// A wall segment with a doorway, era-styled. Same shape as [`wall_door`].
+    pub fn wall_door_era(out: &mut Vec<LitVertex>, cx: f32, y0: f32, cz: f32, face: Facing, height: f32, seed: f32, st: &EraStyle) {
+        let tone = 0.90 + 0.16 * seed;
+        let (nx, nz) = face.nrm();
+        let edge = 0.46;
+        let (px, pz) = (cx + nx * edge, cz + nz * edge);
+        let thick = 0.10;
+        let len = 0.48;
+        let jamb = 0.13;
+        let door_h = (height * 0.78).min(height - 0.12);
+        for s in [-1.0f32, 1.0] {
+            let half = if face.runs_ew() { [jamb, height * 0.5, thick] } else { [thick, height * 0.5, jamb] };
+            let (ox, oz) = if face.runs_ew() { (s * (len - jamb), 0.0) } else { (0.0, s * (len - jamb)) };
+            push_box(out, [px + ox, y0 + height * 0.5, pz + oz], half, 0.0, tint(st.wall, tone));
+        }
+        let lintel_h = height - door_h;
+        let lhalf = if face.runs_ew() { [len, lintel_h * 0.5, thick + 0.005] } else { [thick + 0.005, lintel_h * 0.5, len] };
+        push_box(out, [px, y0 + door_h + lintel_h * 0.5, pz], lhalf, 0.0, tint(st.wall, tone));
+        let dw = len - jamb - 0.02;
+        let dhalf = if face.runs_ew() { [dw, door_h * 0.5, 0.04] } else { [0.04, door_h * 0.5, dw] };
+        let inset = 0.06;
+        push_box(out, [px - nx * inset, y0 + door_h * 0.5, pz - nz * inset], dhalf, 0.0, st.trim);
+    }
+
+    /// A pitched (gable) roof, era-styled. Same shape as [`pitched_roof`].
+    pub fn pitched_roof_era(out: &mut Vec<LitVertex>, x0: f32, z0: f32, x1: f32, z1: f32, y: f32, peak: f32, st: &EraStyle) {
+        let ov = 0.16;
+        let (ax0, az0, ax1, az1) = (x0 - ov, z0 - ov, x1 + ov, z1 + ov);
+        let ridge_along_x = (ax1 - ax0) >= (az1 - az0);
+        let yt = y + peak;
+        if ridge_along_x {
+            let zm = (az0 + az1) * 0.5;
+            let (r0, r1) = ([ax0, yt, zm], [ax1, yt, zm]);
+            push_quad(out, [ax0, y, az0], [ax1, y, az0], r1, r0, st.roof);
+            push_quad(out, [ax1, y, az1], [ax0, y, az1], r0, r1, st.roof2);
+            push_tri(out, [ax0, y, az0], r0, [ax0, y, az1], tint(st.roof, 1.08));
+            push_tri(out, [ax1, y, az0], [ax1, y, az1], r1, tint(st.roof, 1.08));
+            push_box(out, [(ax0 + ax1) * 0.5, yt, zm], [(ax1 - ax0) * 0.5, 0.03, 0.04], 0.0, tint(st.roof, 1.12));
+        } else {
+            let xm = (ax0 + ax1) * 0.5;
+            let (r0, r1) = ([xm, yt, az0], [xm, yt, az1]);
+            push_quad(out, [ax0, y, az0], [ax0, y, az1], r1, r0, st.roof);
+            push_quad(out, [ax1, y, az1], [ax1, y, az0], r0, r1, st.roof2);
+            push_tri(out, [ax0, y, az0], r0, [ax1, y, az0], tint(st.roof, 1.08));
+            push_tri(out, [ax0, y, az1], [ax1, y, az1], r1, tint(st.roof, 1.08));
+            push_box(out, [xm, yt, (az0 + az1) * 0.5], [0.04, 0.03, (az1 - az0) * 0.5], 0.0, tint(st.roof, 1.12));
+        }
+        push_box(out, [(ax0 + ax1) * 0.5, y - 0.01, (az0 + az1) * 0.5], [(ax1 - ax0) * 0.5, 0.03, (az1 - az0) * 0.5], 0.0, tint(st.trim, 0.95));
+    }
+
+    /// A flat parapet roof, era-styled. Same shape as [`flat_roof`].
+    pub fn flat_roof_era(out: &mut Vec<LitVertex>, x0: f32, z0: f32, x1: f32, z1: f32, y: f32, st: &EraStyle) {
+        floor_slab(out, x0, z0, x1, z1, y, 0.10, tint(st.roof, 1.05));
+        let lip = 0.05;
+        let (cx, cz) = ((x0 + x1) * 0.5, (z0 + z1) * 0.5);
+        let (hx, hz) = ((x1 - x0) * 0.5, (z1 - z0) * 0.5);
+        for (ox, oz, sx, sz) in [
+            (0.0, -hz, hx, 0.04f32),
+            (0.0, hz, hx, 0.04),
+            (-hx, 0.0, 0.04, hz),
+            (hx, 0.0, 0.04, hz),
+        ] {
+            push_box(out, [cx + ox, y + lip, cz + oz], [sx, lip, sz], 0.0, tint(st.trim, 0.95));
+        }
+    }
+
+    /// A brick CHIMNEY on a roof: a slim stack with a darker cap. Returns the smoke
+    /// origin (cap top) so the renderer can puff a soot plume there. The Industrial-age
+    /// house signature.
+    pub fn chimney(out: &mut Vec<LitVertex>, cx: f32, cz: f32, y: f32, h: f32, st: &EraStyle) -> [f32; 3] {
+        let w = 0.11;
+        push_box(out, [cx, y + h * 0.5, cz], [w, h * 0.5, w], 0.0, st.wall);
+        // a soot-dark cap.
+        push_box(out, [cx, y + h + 0.04, cz], [w + 0.03, 0.05, w + 0.03], 0.0, st.trim);
+        [cx, y + h + 0.10, cz]
+    }
+
+    /// A factory SMOKESTACK: a tall tapered column on a brick base with a banded top.
+    /// Returns the smoke origin. The Industrial-age landmark (raised on big buildings).
+    pub fn smokestack(out: &mut Vec<LitVertex>, cx: f32, cz: f32, y: f32, h: f32, st: &EraStyle) -> [f32; 3] {
+        // a brick base block.
+        push_box(out, [cx, y + 0.18, cz], [0.20, 0.18, 0.20], 0.0, st.wall);
+        // the tapered column (two stacked boxes, the upper slimmer).
+        let lower = h * 0.6;
+        push_box(out, [cx, y + 0.36 + lower * 0.5, cz], [0.13, lower * 0.5, 0.13], 0.0, tint(st.wall, 0.92));
+        let upper = h * 0.4;
+        push_box(out, [cx, y + 0.36 + lower + upper * 0.5, cz], [0.095, upper * 0.5, 0.095], 0.0, tint(st.wall, 0.86));
+        // soot bands near the top.
+        push_box(out, [cx, y + 0.36 + h - 0.06, cz], [0.115, 0.05, 0.115], 0.0, st.trim);
+        [cx, y + 0.36 + h + 0.06, cz]
+    }
+
+    /// A sleek glass DOME crowning a Space-age block: a low metal drum + a glowing
+    /// glass cupola. Returns the dome apex (for a cool electric glow). The far-future
+    /// signature, the biggest read of the top of the ladder.
+    pub fn dome(out: &mut Vec<LitVertex>, cx: f32, cz: f32, radius: f32, y: f32, st: &EraStyle) -> [f32; 3] {
+        // a metal drum ring.
+        push_box(out, [cx, y + 0.06, cz], [radius, 0.06, radius], 0.0, st.wall2);
+        // the glass cupola — a squat cone in cool glass, plus a bright apex cap.
+        let peak = radius * 1.05;
+        super::push_cone(out, cx, y + 0.10, cz, radius * 0.92, peak, 10, st.glass);
+        // a metal apex finial.
+        push_box(out, [cx, y + 0.10 + peak, cz], [0.05, 0.07, 0.05], 0.0, st.wall);
+        [cx, y + 0.10 + peak + 0.05, cz]
+    }
 }
 
 #[cfg(test)]
@@ -696,6 +1110,29 @@ mod tests {
         let (cx, cz, r) = (20.0, 13.0, 22.0);
         assert!(terrain_height(cx, cz, cx, cz, r) > terrain_height(cx + r * 1.1, cz, cx, cz, r));
         assert!(terrain_height(cx + r * 1.1, cz, cx, cz, r) < SEA_Y, "rim sinks under the sea");
+    }
+
+    #[test]
+    fn villager_emits_trilist_and_walks() {
+        // a striding villager's legs must visibly SWING with phase, while an idle one
+        // holds the same pose at any phase (stride 0 ⇒ no motion). This guards the gait.
+        let mut a = Vec::new();
+        let hp = std::f32::consts::FRAC_PI_2;
+        push_villager(&mut a, 0.0, 0.0, 0.0, 0.0, 1.0, hp, 1.0, [0.4, 0.6, 0.3, 1.0], [0.9, 0.8, 0.7, 1.0]);
+        assert_eq!(a.len() % 3, 0);
+        assert!(!a.is_empty());
+        let mut b = Vec::new();
+        push_villager(&mut b, 0.0, 0.0, 0.0, 0.0, 1.0, 3.0 * hp, 1.0, [0.4, 0.6, 0.3, 1.0], [0.9, 0.8, 0.7, 1.0]);
+        // some vertex must move between the two stride phases (the legs/arms swung).
+        let moved = a.iter().zip(&b).any(|(p, q)| (p.pos[0] - q.pos[0]).abs() + (p.pos[2] - q.pos[2]).abs() > 1e-3);
+        assert!(moved, "a striding villager must change pose with phase");
+        // idle (stride 0) holds pose regardless of phase.
+        let mut c = Vec::new();
+        let mut d = Vec::new();
+        push_villager(&mut c, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, [0.4, 0.6, 0.3, 1.0], [0.9, 0.8, 0.7, 1.0]);
+        push_villager(&mut d, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 0.0, [0.4, 0.6, 0.3, 1.0], [0.9, 0.8, 0.7, 1.0]);
+        let still = c.iter().zip(&d).all(|(p, q)| (p.pos[0] - q.pos[0]).abs() + (p.pos[1] - q.pos[1]).abs() + (p.pos[2] - q.pos[2]).abs() < 1e-4);
+        assert!(still, "an idle villager must not animate");
     }
 
     #[test]

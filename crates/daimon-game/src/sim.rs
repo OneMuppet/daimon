@@ -96,6 +96,31 @@ const AFFINITY_SOFT_CAP: f32 = 0.85;
 /// can fall out and enemies can reconcile (nothing is permanent).
 const RELATION_DECAY: f32 = 0.020;
 
+// --- TECH / ERA tunables (Civilization Sprint 1). Research accrues each society
+// evaluation (every SOCIETY_PERIOD ticks), scaled by a village's people, buildings and
+// peace, so a bigger, busier, more peaceful settlement climbs the era ladder faster.
+// All deterministic; runs off the society side-RNG path (no main-stream draws). ---
+/// Knowledge units a single villager contributes per society evaluation (the base
+/// drip). Multiplied by the population, building, and stability factors below. Tuned
+/// so a healthy mid-size village reaches Industrial within a long session (~16k ticks)
+/// without the climb being instant.
+const RESEARCH_PER_HEAD: f32 = 0.060;
+/// Each building counted near a village's centre adds this fraction to its research
+/// rate (infrastructure compounds knowledge) — capped by `RESEARCH_BUILDING_CAP`.
+const RESEARCH_BUILDING_BONUS: f32 = 0.045;
+/// Cap on the building multiplier so a wall-happy village can't run away (≤ this many
+/// effective buildings count toward the rate).
+const RESEARCH_BUILDING_CAP: f32 = 12.0;
+/// Manhattan radius around a village's centre within which a built cell counts as that
+/// village's building (for the building research factor + render era lookup).
+const VILLAGE_BUILD_R: i32 = 26;
+/// Stability multiplier when a village is at PEACE (no rival/enemy borders): research
+/// flows fastest. Scaled down toward `RESEARCH_STABILITY_WAR` as hostilities mount.
+const RESEARCH_STABILITY_PEACE: f32 = 1.0;
+/// Stability multiplier when a village sits in open hostility (a rival/enemy on every
+/// front): a war footing starves the workshops, so progress crawls.
+const RESEARCH_STABILITY_WAR: f32 = 0.35;
+
 /// Minimal HSV→RGB (each channel 0..255) for spreading village identity hues evenly
 /// around the colour wheel. `h,s,v` in `[0,1]`.
 fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
@@ -373,6 +398,67 @@ fn pred_reflect01(mut x: f32) -> f32 {
     x.clamp(0.0, 1.0)
 }
 
+/// A village's TECH ERA (Civilization Sprint 1). A village climbs this ladder as it
+/// accumulates RESEARCH — more people + more buildings + peace make it advance faster.
+/// The era is the legible "how far has this settlement come" axis, and it drives the
+/// architecture the renderer raises (thatch huts → stone houses → brick + smokestacks
+/// → sleek metal/glass domes). Ordered, so `era as u8` is the tech rank — later sprints
+/// (weapons/war, wonders, space launch) read it as a gate. Default `Stone`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Era {
+    /// The founding age: thatch + timber huts, low and warm.
+    Stone,
+    /// Worked metal arrives: tidy timber-framed houses on stone footings.
+    Bronze,
+    /// Stone masonry + sturdier halls — the classic walled village.
+    Iron,
+    /// The machine age: brick terraces with chimneys + a smoking factory stack.
+    Industrial,
+    /// The far future: sleek metal-and-glass blocks crowned with domes, lit cool.
+    Space,
+}
+
+impl Era {
+    /// The full ladder in order (Stone … Space). Index == tech rank.
+    pub const LADDER: [Era; 5] = [Era::Stone, Era::Bronze, Era::Iron, Era::Industrial, Era::Space];
+    /// A short display name for the HUD.
+    pub fn name(self) -> &'static str {
+        match self {
+            Era::Stone => "Stone Age",
+            Era::Bronze => "Bronze Age",
+            Era::Iron => "Iron Age",
+            Era::Industrial => "Industrial Age",
+            Era::Space => "Space Age",
+        }
+    }
+    /// The next era up the ladder, or `None` at the top (Space).
+    pub fn next(self) -> Option<Era> {
+        Era::LADDER.get(self as usize + 1).copied()
+    }
+}
+
+/// Cumulative research (in arbitrary "knowledge units") a village must have banked to
+/// have REACHED each era. Index == era rank. Stone is free (0); each rung roughly
+/// doubles, so the early climb is brisk (a watcher sees Stone→Bronze→Iron within a
+/// session) and the late climb is a long haul (Space is a marathon, rarely reached in
+/// one sitting). Tuned against the long-run trace (seed 0x61, 4 villages): the climb is
+/// brisk early — Bronze by ~tick 3k, Iron by ~7k, Industrial by ~14-18k — and Space is
+/// a genuine stretch goal a strong village only reaches late in a long session (≈25k+),
+/// while a small/contested village may still be Industrial at 30k. See
+/// `era_for_research`.
+pub const ERA_THRESHOLDS: [f32; 5] = [0.0, 45.0, 130.0, 360.0, 1100.0];
+
+/// The highest era whose threshold `research` has crossed.
+pub fn era_for_research(research: f32) -> Era {
+    let mut e = Era::Stone;
+    for (i, &thr) in ERA_THRESHOLDS.iter().enumerate() {
+        if research >= thr {
+            e = Era::LADDER[i];
+        }
+    }
+    e
+}
+
 /// A VILLAGE (settlement): a named, coloured cluster of minds (Sprint 4 society).
 /// A village is a spatial cluster of minds reinforced by KINSHIP — children inherit
 /// their parent's village, so families/lineages stay together and the cluster
@@ -391,6 +477,17 @@ pub struct Village {
     pub center: Pos,
     /// Living-member count at the last society tick (diag / render).
     pub population: usize,
+    /// Cumulative RESEARCH banked (knowledge units), Civilization Sprint 1. Grows each
+    /// society evaluation, scaled by population × buildings × stability/peace. Drives
+    /// `era`. Zero unless the world's `eras` flag is on.
+    pub research: f32,
+    /// This village's current TECH ERA, derived from `research` via the ladder. The
+    /// renderer raises era-appropriate architecture from it; later sprints gate on it.
+    /// `Era::Stone` unless `eras` is on and the village has climbed.
+    pub era: Era,
+    /// Buildings counted nearest this village's centre at the last eval (diag / render
+    /// of the building-count research factor). Zero unless `eras` is on.
+    pub buildings: usize,
 }
 
 /// The standing RELATION between two villages (Sprint 4 society). A single signed
@@ -589,6 +686,16 @@ pub struct GameWorld {
     /// formed, and deaths that occurred across an enemy/rival line.
     pub cross_marriages: u32,
     pub border_deaths: u32,
+    /// LIVE-ONLY TECH/ERA switch (Civilization Sprint 1). Default `false` so every
+    /// AC/proof/fitness run is byte-identical: villages never accumulate research, stay
+    /// at `Era::Stone`, and no era logic runs (zero new draws). When `true` each village
+    /// banks RESEARCH every society evaluation — scaled by its population, buildings and
+    /// peace — and climbs the [`Era`] ladder (Stone → Bronze → Iron → Industrial →
+    /// Space); the renderer then raises era-appropriate architecture. Requires `society`
+    /// (eras live on villages). The accrual is deterministic and rides the existing
+    /// society-evaluation path (no main-stream RNG), so it perturbs no seeded trajectory.
+    /// Only the live showcase (`Game::new`) / eras diag flip it on.
+    pub eras: bool,
     /// Dedicated society RNG. ALL clustering / naming / society-jitter draws come from
     /// here so the main stream is never perturbed. Seeded when `society` is turned on.
     soc_rng: Rng,
@@ -1013,6 +1120,9 @@ impl GameWorld {
             relations: Vec::new(),
             cross_marriages: 0,
             border_deaths: 0,
+            // eras: off by default (the incumbent). No research accrues, villages stay
+            // Stone, and zero era logic runs until `set_eras(true)` arms it live-only.
+            eras: false,
             soc_rng: Rng::new(0),
             rng,
             next_id,
@@ -1294,6 +1404,11 @@ impl GameWorld {
                 hue: Self::village_hue(ci, k),
                 center: centers[ci],
                 population: 0,
+                // every village is founded in the Stone Age with no research banked;
+                // it climbs only if `eras` is on and it has the people/buildings/peace.
+                research: 0.0,
+                era: Era::Stone,
+                buildings: 0,
             })
             .collect();
 
@@ -1312,6 +1427,101 @@ impl GameWorld {
             }
         }
         self.recompute_village_centers();
+    }
+
+    /// Turn on the TECH/ERA progression (Civilization Sprint 1). Live-only: the seeded
+    /// harness/AC/proof paths never call it, so they stay byte-identical (no research,
+    /// villages frozen at `Era::Stone`, zero new RNG draws). Requires `society` to be on
+    /// first (eras live on villages) — a no-op otherwise. Once armed, each village banks
+    /// research every society evaluation (scaled by population × buildings × peace) and
+    /// climbs the ladder; the renderer reads `village.era` to raise era architecture.
+    /// The accrual is fully deterministic and rides the existing society-evaluation
+    /// schedule (no extra RNG), so it perturbs no seeded trajectory.
+    pub fn set_eras(&mut self, on: bool) {
+        self.eras = on && self.society;
+        if !self.eras {
+            return;
+        }
+        // (re)start every village from a clean Stone-age slate so two same-sized worlds
+        // get the same climb regardless of when eras were armed.
+        for v in &mut self.villages {
+            v.research = 0.0;
+            v.era = Era::Stone;
+            v.buildings = 0;
+        }
+    }
+
+    /// Accumulate RESEARCH for every village and re-derive its era (Civilization
+    /// Sprint 1). Called once per society evaluation from [`step_society`] when `eras`
+    /// is on; a no-op (zero draws) otherwise, so non-era worlds stay byte-identical.
+    /// Rate = people × (1 + buildings) × peace, so a bigger, busier, more peaceful
+    /// village climbs faster — and a war footing or depopulation stalls it.
+    fn step_eras(&mut self) {
+        if !self.eras || self.villages.is_empty() {
+            return;
+        }
+        let k = self.villages.len();
+        // --- count buildings nearest each village's centre (its infrastructure) ---
+        // A built cell is attributed to the closest village centre within VILLAGE_BUILD_R;
+        // cells far from every centre (no settlement) count for none.
+        let centers: Vec<Pos> = self.villages.iter().map(|v| v.center).collect();
+        let mut builds = vec![0usize; k];
+        for w in &self.walls {
+            let mut best: Option<(usize, i32)> = None;
+            for (vi, c) in centers.iter().enumerate() {
+                let d = w.manhattan(*c);
+                if d <= VILLAGE_BUILD_R && best.map(|(_, b)| d < b).unwrap_or(true) {
+                    best = Some((vi, d));
+                }
+            }
+            if let Some((vi, _)) = best {
+                builds[vi] += 1;
+            }
+        }
+        // --- a per-village PEACE factor from its standing relations: at peace it learns
+        // fastest; a rival/enemy on the borders drags it toward the war floor. ---
+        let peace = self.village_peace_factors();
+        for (vi, v) in self.villages.iter_mut().enumerate() {
+            v.buildings = builds[vi];
+            if v.population == 0 {
+                continue; // a depopulated village makes no progress (but keeps its rank)
+            }
+            let pop_f = v.population as f32;
+            let build_f = 1.0
+                + RESEARCH_BUILDING_BONUS * (builds[vi] as f32).min(RESEARCH_BUILDING_CAP);
+            let rate = RESEARCH_PER_HEAD * pop_f * build_f * peace[vi];
+            v.research += rate;
+            v.era = era_for_research(v.research);
+        }
+    }
+
+    /// Per-village PEACE factor in `[RESEARCH_STABILITY_WAR, RESEARCH_STABILITY_PEACE]`:
+    /// 1.0 with no hostile neighbour, sliding toward the war floor as the fraction of a
+    /// village's *populated* neighbours that are Rival/Enemy rises. Used by `step_eras`.
+    fn village_peace_factors(&self) -> Vec<f32> {
+        let k = self.villages.len();
+        let mut out = vec![RESEARCH_STABILITY_PEACE; k];
+        for (vi, v) in self.villages.iter().enumerate() {
+            let mut neighbours = 0u32;
+            let mut hostile = 0u32;
+            for other in &self.villages {
+                if other.id == v.id || other.population == 0 {
+                    continue;
+                }
+                neighbours += 1;
+                if let Some(r) = self.relation_between(v.id, other.id) {
+                    if matches!(r.kind(), RelationKind::Rival | RelationKind::Enemy) {
+                        hostile += 1;
+                    }
+                }
+            }
+            if neighbours > 0 {
+                let frac = hostile as f32 / neighbours as f32;
+                out[vi] = RESEARCH_STABILITY_PEACE
+                    + frac * (RESEARCH_STABILITY_WAR - RESEARCH_STABILITY_PEACE);
+            }
+        }
+        out
     }
 
     /// A warm, deterministic settlement name (drawn off the society side-RNG so the
@@ -1419,9 +1629,11 @@ impl GameWorld {
     ///   permanent: allies can fall out and enemies can reconcile.
     fn step_society(&mut self) {
         if self.villages.len() < 2 {
-            // a single village still tracks its centre, but has no relations to drift.
+            // a single village still tracks its centre, but has no relations to drift —
+            // it can still climb the tech ladder (peace is trivially 1.0 with no rival).
             if self.tick % SOCIETY_PERIOD == 0 {
                 self.recompute_village_centers();
+                self.step_eras();
             }
             return;
         }
@@ -1555,6 +1767,11 @@ impl GameWorld {
             // SHIFT in either direction as interactions change.
             rel.affinity = rel.affinity.clamp(-AFFINITY_SOFT_CAP, AFFINITY_SOFT_CAP);
         }
+        // TECH/ERA (Civilization Sprint 1): with relations now drifted for this eval,
+        // bank each village's research (scaled by people × buildings × the fresh peace)
+        // and re-derive its era. A no-op (zero draws) when `eras` is off, so non-era
+        // worlds are byte-identical.
+        self.step_eras();
     }
 
     /// The standing relation between two villages (in either order). `None` if either
@@ -1571,6 +1788,24 @@ impl GameWorld {
     pub fn village_of(&self, i: usize) -> Option<&Village> {
         let v = self.agents.get(i)?.village?;
         self.villages.get(v as usize)
+    }
+
+    /// The TECH ERA governing a building at world position `p`: the era of the nearest
+    /// village centre within `VILLAGE_BUILD_R`, or `Era::Stone` if no village owns that
+    /// ground (or eras are off). The renderer calls this to raise era-appropriate
+    /// architecture per building cluster, so a village's structures reflect its era.
+    pub fn era_at(&self, p: Pos) -> Era {
+        if !self.eras {
+            return Era::Stone;
+        }
+        let mut best: Option<(Era, i32)> = None;
+        for v in &self.villages {
+            let d = p.manhattan(v.center);
+            if d <= VILLAGE_BUILD_R && best.map(|(_, b)| d < b).unwrap_or(true) {
+                best = Some((v.era, d));
+            }
+        }
+        best.map(|(e, _)| e).unwrap_or(Era::Stone)
     }
 
     /// Whether the mind at index `i` should feel WARY of the mind at index `j`:

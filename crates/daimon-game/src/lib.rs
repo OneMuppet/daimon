@@ -28,6 +28,12 @@ use winit::window::{Window, WindowId};
 
 use gfx::Gfx;
 use sim::GameWorld;
+
+// DEBUG follow-cam target (look-iteration aid for `?atmind=N`): the living-mind
+// index the first-person eye should track each frame, and how far to stand. Off by
+// default; never set by the harness paths.
+thread_local!(static FOLLOW_MIND: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) });
+thread_local!(static FOLLOW_DIST: std::cell::Cell<f32> = const { std::cell::Cell::new(1.6) });
 use view::{Camera, Hud};
 
 /// Delivered when the (async) GPU context finishes initialising.
@@ -147,6 +153,15 @@ impl Game {
         // never call this) stay byte-identical. Four villages reads as a small society
         // on this island without fragmenting the population below viability.
         world.set_society(true, 4);
+        // TECH / ERAS on for the live showcase (Civilization Sprint 1): each VILLAGE now
+        // accumulates RESEARCH every society evaluation — scaled by its population,
+        // buildings and peace — and climbs a tech ladder (Stone → Bronze → Iron →
+        // Industrial → Space). Its buildings visibly EVOLVE per era (thatch huts → stone
+        // houses → brick + smokestacks → metal/glass domes), so a watcher can SEE which
+        // settlement has advanced. Live-only and rides the existing society-evaluation
+        // schedule (no main-stream RNG), so the seeded harness/AC/proof paths (which
+        // never call this) stay byte-identical. Requires `set_society` above.
+        world.set_eras(true);
         let mut cam = Camera::new(world.w as f32 * 0.5, world.h as f32 * 0.5);
         // A closer cinematic frame than "whole island" so the minds and their built
         // structures read with real detail on load (buildings are tiny at full-island
@@ -155,6 +170,28 @@ impl Game {
         // — close enough that the wolves, bears, and deer of the ecosystem read clearly
         // on load, while the orbit + scroll-zoom still reveal the whole island.
         cam.zoom = (world.w.max(world.h) as f32) * 0.34;
+        // DEBUG PREWARM (live-only iterate-on-the-look seam): fast-forward the sim N
+        // ticks before the first frame so a headless screenshot can show a world that
+        // has had time to evolve — villages climbing the era ladder, the lineage turned
+        // over, paths worn. Native reads env `DAIMON_WARM`, web reads url `?warm=N`. Off
+        // (0) by default, so a normal launch starts at tick 0 exactly as before. Never
+        // touched by the harness/AC/proof paths.
+        let warm = warm_debug_ticks();
+        for _ in 0..warm {
+            world.step();
+        }
+        // DEBUG camera framing (live-only look-iteration seam): `?zoom=N` tightens the
+        // iso frame and `?cx=`/`?cz=` re-centre it, so a headless shot can frame a single
+        // village's buildings to inspect era architecture. Absent → the default frame.
+        if let Some(z) = debug_query_f32("zoom") {
+            cam.zoom = z;
+        }
+        if let Some(cx) = debug_query_f32("cx") {
+            cam.cx = cx;
+        }
+        if let Some(cz) = debug_query_f32("cz") {
+            cam.cy = cz;
+        }
         Game {
             world,
             cam,
@@ -260,8 +297,10 @@ impl Game {
         let (forward, right) = crate::math::fp_basis(fp.yaw, 0.0);
         let pace = if self.run { 14.0 } else { 6.0 }; // sim cells / second
         let step = pace * dt * inv;
-        fp.eye_x += (forward.x * fy + right.x * rx) * step;
-        fp.eye_z += (forward.z * fy + right.z * rx) * step;
+        // strafe is NEGATED: fp_basis' `right` is the opposite handedness to the
+        // god-view pan basis, so A/D would otherwise be inverted in first person.
+        fp.eye_x += (forward.x * fy - right.x * rx) * step;
+        fp.eye_z += (forward.z * fy - right.z * rx) * step;
         // Keep the walker on the island (clamp to the world bounds with a margin).
         let (w, h) = (self.world.w as f32, self.world.h as f32);
         fp.eye_x = fp.eye_x.clamp(0.5, w - 1.5);
@@ -300,6 +339,18 @@ impl Game {
             return;
         }
         self.world.animate(dt);
+        // DEBUG follow-cam: when `?atmind=N` is set, keep the first-person eye locked a
+        // short distance from the N-th living mind every frame, so a headless shot can
+        // study a WALKING villager that would otherwise stride out of a fixed frame.
+        // Render aid only — no sim effect.
+        if let (Some(n), Some(fp)) = (FOLLOW_MIND.with(|c| c.get()), self.cam.fp.as_mut()) {
+            if let Some(a) = self.world.living().nth(n) {
+                let dist = FOLLOW_DIST.with(|c| c.get());
+                fp.eye_x = a.rx + dist * 0.707;
+                fp.eye_z = a.ry + dist * 0.707;
+                fp.yaw = (a.ry - fp.eye_z).atan2(a.rx - fp.eye_x);
+            }
+        }
         if self.hud.paused {
             return;
         }
@@ -339,6 +390,9 @@ impl App {
         if let Some(fp) = fp_debug_start(&game) {
             game.cam.fp = Some(fp);
         }
+        // DEBUG: suppress mind glow so a headless shot can inspect the bare villager
+        // character mesh (`?noglow=1` / DAIMON_NOGLOW). Render aid only; no sim effect.
+        view::set_noglow(debug_query_f32("noglow").map(|v| v != 0.0).unwrap_or(false));
         Self {
             gfx: None,
             game,
@@ -625,6 +679,54 @@ impl ApplicationHandler<AppEvent> for App {
 /// eye/look aimed across the island toward the village heart, so a headless shot
 /// can inspect the walk-through framing. Native reads env `DAIMON_FP`; web reads
 /// the url query `?fp=1`. Returns `None` (normal god-view start) when absent.
+/// DEBUG PREWARM tick count for the iterate-on-the-look loop: how many sim ticks to
+/// fast-forward before the first frame, so a headless shot shows an evolved world (used
+/// to capture era-distinct architecture). Native reads env `DAIMON_WARM`, web reads url
+/// `?warm=N`. Returns 0 (no prewarm — the normal tick-0 start) when absent/unparseable.
+/// Capped so a typo can't hang the launch.
+/// Read a debug numeric config `key` for the look-iteration loop: native from env
+/// `DAIMON_<KEY>` (upper-cased), web from url query `?<key>=N`. `None` if absent/unparseable.
+fn debug_query_f32(key: &str) -> Option<f32> {
+    let raw: Option<String> = {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::env::var(format!("DAIMON_{}", key.to_uppercase())).ok()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let pfx = format!("{key}=");
+            web_sys::window()
+                .and_then(|w| w.location().search().ok())
+                .and_then(|q: String| {
+                    q.trim_start_matches('?')
+                        .split('&')
+                        .find_map(|kv| kv.strip_prefix(pfx.as_str()).map(|s| s.to_string()))
+                })
+        }
+    };
+    raw.and_then(|s| s.parse::<f32>().ok())
+}
+
+fn warm_debug_ticks() -> u32 {
+    let raw: Option<String> = {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::env::var("DAIMON_WARM").ok()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            web_sys::window()
+                .and_then(|w| w.location().search().ok())
+                .and_then(|q: String| {
+                    q.trim_start_matches('?')
+                        .split('&')
+                        .find_map(|kv| kv.strip_prefix("warm=").map(|s| s.to_string()))
+                })
+        }
+    };
+    raw.and_then(|s| s.parse::<u32>().ok()).unwrap_or(0).min(60_000)
+}
+
 fn fp_debug_start(game: &Game) -> Option<view::FpView> {
     let on = {
         #[cfg(not(target_arch = "wasm32"))]
@@ -651,7 +753,28 @@ fn fp_debug_start(game: &Game) -> Option<view::FpView> {
     let cx = w * 0.62;
     let cz = h * 0.52;
     let yaw = (cz - eye_z).atan2(cx - eye_x); // aim across the heart
-    Some(view::FpView { eye_x, eye_z, yaw, pitch: -0.04 })
+    // DEBUG look-iteration overrides: stand at an explicit eye + aim, so a headless
+    // shot can walk up to a chosen villager to inspect the character mesh up close.
+    let mut eye_x = debug_query_f32("eyex").unwrap_or(eye_x);
+    let mut eye_z = debug_query_f32("eyez").unwrap_or(eye_z);
+    let mut yaw = debug_query_f32("yaw").unwrap_or(yaw);
+    let pitch = debug_query_f32("pitch").unwrap_or(-0.04);
+    // `?atmind=N` (debug): stand a short distance from the N-th living mind and aim
+    // straight at it, so the shot is always centred on a villager no matter where it
+    // has wandered — the reliable close-up inspection seam for the character mesh.
+    if let Some(n) = debug_query_f32("atmind") {
+        let dist = debug_query_f32("dist").unwrap_or(1.6);
+        // record the target so the per-frame follow-cam keeps tracking it as it walks.
+        FOLLOW_MIND.with(|c| c.set(Some(n as usize)));
+        FOLLOW_DIST.with(|c| c.set(dist));
+        if let Some(a) = game.world.living().nth(n as usize) {
+            // stand to the +x,+z of the mind, looking back toward it.
+            eye_x = a.rx + dist * 0.707;
+            eye_z = a.ry + dist * 0.707;
+            yaw = (a.ry - eye_z).atan2(a.rx - eye_x);
+        }
+    }
+    Some(view::FpView { eye_x, eye_z, yaw, pitch })
 }
 
 /// Grab the mouse for first-person look. On the WEB this calls the canvas's

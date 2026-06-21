@@ -16,6 +16,19 @@ use daimon_mind::Process;
 
 const TAU: f32 = std::f32::consts::TAU;
 
+// DEBUG look-iteration toggle: when set, the per-mind glow is suppressed so a
+// headless shot can inspect the bare villager CHARACTER mesh. Off by default and
+// never touched by the harness; a pure render aid set from `?noglow=1` / DAIMON_NOGLOW.
+thread_local!(static NOGLOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+/// Set the debug "suppress mind glow" flag (look-iteration aid only).
+pub fn set_noglow(on: bool) {
+    NOGLOW.with(|c| c.set(on));
+}
+#[inline]
+fn noglow() -> bool {
+    NOGLOW.with(|c| c.get())
+}
+
 /// First-person "drop in" state: you stand at `(eye_x, eye_z)` in sim coords, at
 /// human eye-height above the terrain there, looking along `yaw`/`pitch`. Pure
 /// render+input — it never touches the sim; it's just an alternative way to look
@@ -576,7 +589,10 @@ pub fn build_with(
         }
         let (x, z) = (d.rx, d.ry);
         let gy = g(x, z);
-        push_deer(&mut s.lit, x, gy, z, d.heading, time, d.fleeing);
+        // gait gate: the render pos chases the grid cell, so the gap to the target is
+        // a clean "is it moving" signal — wide while crossing cells, ~0 when grazing.
+        let mv = anim_move01(d.rx, d.ry, d.pos.x as f32, d.pos.y as f32);
+        push_deer(&mut s.lit, x, gy, z, d.heading, time, d.fleeing, mv);
         // a soft cool-white ground halo so the tan deer reads against the warm grass
         // and its tan terrain tufts (a cream halo would vanish into them) — gentle
         // enough to stay natural, brighter while it bolts.
@@ -586,7 +602,8 @@ pub fn build_with(
     for w in &world.wolves {
         let (x, z) = (w.rx, w.ry);
         let gy = g(x, z);
-        push_wild_wolf(&mut s.lit, x, gy, z, w.heading, time, w.flash);
+        let mv = anim_move01(w.rx, w.ry, w.pos.x as f32, w.pos.y as f32);
+        push_wild_wolf(&mut s.lit, x, gy, z, w.heading, time, w.flash, mv);
         // a low, cool threat aura — far subtler than the stalker's red menace, but
         // enough to pick the grey pack out of the foliage.
         glow(&mut s, [x, gy + 0.40, z], 0.9 + 0.6 * w.flash, Color::hex(0x9fb6e0, 0.22 + 0.25 * w.flash));
@@ -594,7 +611,8 @@ pub fn build_with(
     for b in &world.bears {
         let (x, z) = (b.rx, b.ry);
         let gy = g(x, z);
-        push_bear(&mut s.lit, x, gy, z, b.heading, time, b.flash);
+        let mv = anim_move01(b.rx, b.ry, b.pos.x as f32, b.pos.y as f32);
+        push_bear(&mut s.lit, x, gy, z, b.heading, time, b.flash, mv);
         // a warm amber aura marks the big solitary bear — the most dangerous animal.
         glow(&mut s, [x, gy + 0.55, z], 1.3 + 0.5 * b.flash, Color::hex(0xe09a4a, 0.26 + 0.28 * b.flash));
     }
@@ -685,34 +703,72 @@ pub fn build_with(
         let hap = world.happiness_of(a);
         let hap_b = 0.78 + 0.44 * hap; // ≈ [0.78, 1.22] brightness/size factor
 
-        // body (a luminous gumdrop) + head — a little taller than the grass so
-        // the minds always read as the focus of the scene. Scaled by maturity.
-        geo::push_cone(&mut s.lit, x, gy, z, 0.34 * sc, (0.78 + 0.04 * breath) * sc, 6, accent.0);
-        geo::push_box(
+        // WALKING DRIVER: derive a heading + a stride strength from the mind's own
+        // recent motion. The sim lerps `(rx,ry)` toward the grid cell and lays down a
+        // `trail` breadcrumb when it moves; comparing the live render position to the
+        // most-recent breadcrumb gives a movement vector this frame — direction =
+        // facing, magnitude = how hard it's walking. A mind that's standing still has
+        // ~zero vector ⇒ stride 0 ⇒ it stands; a mind crossing the island strides.
+        // Purely a read of render state — no sim is touched.
+        let (mvx, mvz) = match a.trail.last() {
+            Some(&(lx, ly)) => (x - lx, z - ly),
+            None => (0.0, 0.0),
+        };
+        let mspeed = mvx.hypot(mvz);
+        let heading = if mspeed > 1e-4 { mvz.atan2(mvx) } else { 0.0 };
+        // stride ramps in over a small speed window so a dawdle is a gentle step and a
+        // purposeful walk is a full stride; smoothed so it never snaps on/off.
+        let stride = smoothstep(0.03, 0.32, mspeed);
+        // each mind walks on its OWN beat: a per-entity phase offset + a cadence that
+        // ticks with logical time (faster while striding harder), so the village never
+        // marches in lockstep. Phase is logical-time-derived ⇒ deterministic.
+        let cadence = 6.0 + 5.0 * stride;
+        let phase = time * cadence + i as f32 * 2.39996; // golden-angle offset → well spread
+
+        // the body — a real little villager (torso + head + swinging limbs), torso in
+        // the mind's drive/village colour so it still reads as a coloured figure, head
+        // in warm "skin". Scaled by maturity (children small, bigger-headed). It walks
+        // when moving and stands when idle. A faint breath bob keeps an idle mind alive.
+        let idle_bob = (1.0 - stride) * (0.5 + 0.5 * breath) * 0.02;
+        geo::push_villager(
             &mut s.lit,
-            [x, gy + 0.96 * sc, z],
-            [0.17 * sc, 0.17 * sc, 0.17 * sc],
-            0.0,
-            Color::hex(0xf2e9da, 1.0).0,
+            x,
+            gy + idle_bob * sc,
+            z,
+            heading,
+            sc,
+            phase,
+            stride,
+            accent.0,
+            Color::hex(0xf0d9b8, 1.0).0,
         );
 
-        // THE GLOW — each mind is a drive-coloured beacon. Layered additive orbs
-        // accumulate to a HOT (HDR > 1) core so it blows past the bloom threshold and
-        // halos in the post pass, fading out through a saturated drive ring to a wide
-        // soft mood aura. Bright multi-layer alphas (additive) push the centre well
-        // over 1.0 so each mind is an unmistakable point of living light. Size scales
-        // with maturity (children glow smaller) and brightness with happiness.
-        let gy_b = gy + 0.78 * sc;
-        let gh = gy + 0.7 * sc;
-        glow(&mut s, [x, gy_b, z], (2.6 + 0.6 * breath) * sc, mood.with_a(0.18 * hap_b)); // wide soft mood aura
-        glow(&mut s, [x, gh, z], (1.5 + 0.25 * pulse) * sc, drive.with_a((0.85 * hap_b).min(1.0))); // pulsing drive halo
-        glow(&mut s, [x, gh, z], 0.7 * sc, drive.with_a(1.0)); // saturated inner ring
-        glow(&mut s, [x, gh, z], 0.6 * sc, drive.with_a(0.9)); // (stacks → core goes HDR)
-        glow(&mut s, [x, gy + 0.68 * sc, z], (0.36 + 0.07 * pulse) * sc, Color::hex(0xfffaf0, 1.0)); // hot white core
-        glow(&mut s, [x, gy + 0.68 * sc, z], 0.22 * sc, Color::hex(0xffffff, 1.0)); // (stack → super-bright)
+        // THE GLOW — each mind still glows, but now it is a CHARACTER that glows
+        // rather than a featureless orb: the aura BACKLIGHTS the little figure and a
+        // bright soul-spark floats just above its head (the unmistakable point of
+        // living light) instead of a hot core blowing out the body. So the villager
+        // reads as a person, and the "minds glow" signature is kept as a halo + a
+        // hovering mind-light. Layered additive orbs still stack toward HDR at the
+        // spark so it blooms in the post pass. Size scales with maturity (children
+        // glow smaller), brightness with happiness.
+        let top = geo::villager_crown(sc) + gy; // crown of the figure (just above the head)
+        if !noglow() {
+        // a wide, soft, body-height mood aura that frames the figure without hiding it.
+        glow(&mut s, [x, gy + 0.55 * sc, z], (1.9 + 0.5 * breath) * sc, mood.with_a(0.14 * hap_b));
+        // a drive-coloured halo wrapping the torso — saturated but translucent, so the
+        // character shows through (its alpha is well under the old opaque rings).
+        glow(&mut s, [x, gy + 0.55 * sc, z], (1.05 + 0.2 * pulse) * sc, drive.with_a(0.38 * hap_b));
+        // the SOUL-SPARK: a small bright mind-light hovering over the head, breathing.
+        // Stacked additive layers push it HDR so it blooms — the living-light read,
+        // now lifted clear of the face.
+        let spark = top + (0.16 + 0.03 * breath) * sc;
+        glow(&mut s, [x, spark, z], (0.30 + 0.05 * pulse) * sc, drive.with_a(0.95));
+        glow(&mut s, [x, spark, z], 0.20 * sc, Color::hex(0xfffaf0, 1.0));
+        glow(&mut s, [x, spark, z], 0.13 * sc, Color::hex(0xffffff, 1.0)); // (stack → super-bright)
         // a coloured pool of light cast on the ground beneath each mind, so it feels
         // like it is genuinely emitting light onto the island.
-        glow(&mut s, [x, gy + 0.05, z], 1.3 * sc, drive.with_a(0.35));
+        glow(&mut s, [x, gy + 0.05, z], 1.2 * sc, drive.with_a(0.32));
+        } // end !noglow
 
         // selection: a bright pale halo
         if Some(i) == selected {
@@ -778,7 +834,10 @@ pub fn build_with(
 
         // world-anchored labels: name + speech, projected to the screen for crisp
         // text. Positions are physical px (from projection); sizes scale by `ui`.
-        if let Some((sx, sy)) = project(&vp, [x, gy + 1.2, z], sw, sh) {
+        // Float the name just above the figure's crown + soul-spark so it never
+        // overlaps the (now taller) character; scales with maturity so a child's
+        // label hugs its smaller head.
+        if let Some((sx, sy)) = project(&vp, [x, geo::villager_crown(sc) + gy + 0.35 * sc, z], sw, sh) {
             if cam.zoom < 22.0 {
                 let tw = a.name.chars().count() as f32 * 6.5 * ui;
                 s.text(&a.name, sx - tw * 0.5, sy, 12.0 * ui, Color::hex(PAPER, 0.92));
@@ -905,10 +964,26 @@ enum BuildKind {
     Watchtower,
 }
 
+/// Map a village's [`Era`] to the material palette its buildings are raised in
+/// (Civilization Sprint 1). Stone keeps the warm hand-built look; each rung up the
+/// ladder swaps materials (thatch → lime-wash → dressed stone → red brick → brushed
+/// metal/glass), so a settlement's architecture announces how far it has come.
+fn era_style(era: crate::sim::Era) -> crate::geo::pieces::EraStyle {
+    use crate::geo::pieces;
+    use crate::sim::Era;
+    match era {
+        Era::Stone => pieces::ERA_STONE,
+        Era::Bronze => pieces::ERA_BRONZE,
+        Era::Iron => pieces::ERA_IRON,
+        Era::Industrial => pieces::ERA_INDUSTRIAL,
+        Era::Space => pieces::ERA_SPACE,
+    }
+}
+
 fn build_structures(
     s: &mut Scene,
     world: &GameWorld,
-    _time: f32,
+    time: f32,
     g: &impl Fn(f32, f32) -> f32,
     glow: &impl Fn(&mut Scene, [f32; 3], f32, Color),
 ) {
@@ -1029,6 +1104,16 @@ fn build_structures(
         } else {
             BuildKind::Home
         };
+
+        // TECH ERA (Civilization Sprint 1): which era's architecture this cluster wears —
+        // the era of the nearest village centre. `era_at` returns `Era::Stone` when eras
+        // are off, so a non-era world renders exactly as before (Stone == the incumbent
+        // warm-timber look's closest match; Iron is the old sandstone). The era picks the
+        // material palette every era-aware piece below paints with, plus per-era roof
+        // crowns (chimneys, smokestacks, domes), so a village's buildings visibly EVOLVE
+        // as it climbs the ladder — and you can SEE which settlement has advanced.
+        let era = world.era_at(centre);
+        let style = era_style(era);
 
         // ESTABLISHMENT (live-only, deterministic): how settled this structure is,
         // 0..1. Bigger footprints establish; time on the island raises it further so
@@ -1168,18 +1253,22 @@ fn build_structures(
                 let czf = *cz as f32 + (czm - *cz as f32).signum() * ins.min((*cz as f32 - czm).abs());
                 let seed = jit(si as u32 * 7 + st as u32 * 131);
                 if st == 0 && Some(si) == door_idx {
-                    pieces::wall_door(&mut s.lit, cxf, y0, czf, *face, storey_h, seed);
+                    pieces::wall_door_era(&mut s.lit, cxf, y0, czf, *face, storey_h, seed, &style);
                     continue;
                 }
                 // windows: deterministic sampling. Denser on upper floors (each storey
-                // wants light); the ground floor is more solid (it's the base).
+                // wants light); the ground floor is more solid (it's the base). The
+                // Space age glazes nearly everything (a glass-curtain look).
                 let wt = jit(si as u32 * 13 + st as u32 * 101 + 17);
-                let want_window = wt > if st == 0 { 0.55 } else { 0.40 };
+                let win_thr = if matches!(era, crate::sim::Era::Space) {
+                    if st == 0 { 0.30 } else { 0.15 }
+                } else if st == 0 { 0.55 } else { 0.40 };
+                let want_window = wt > win_thr;
                 if want_window {
-                    let c = pieces::wall_window(&mut s.lit, cxf, y0, czf, *face, storey_h, seed);
+                    let c = pieces::wall_window_era(&mut s.lit, cxf, y0, czf, *face, storey_h, seed, &style);
                     window_lights.push(c);
                 } else {
-                    pieces::wall_segment(&mut s.lit, cxf, y0, czf, *face, storey_h, seed);
+                    pieces::wall_segment_era(&mut s.lit, cxf, y0, czf, *face, storey_h, seed, &style);
                 }
             }
 
@@ -1241,36 +1330,77 @@ fn build_structures(
         let rz1 = z1 as f32 + 0.5 - tins;
         // beacon glow position (set by the watchtower crown), lit below with the windows.
         let mut beacon: Option<[f32; 3]> = None;
+        // ERA roof crowns (Civilization Sprint 1): the Industrial age caps homes/halls
+        // with smoking CHIMNEYS and big buildings with a factory SMOKESTACK; the Space
+        // age crowns blocks with a glowing glass DOME. Collected here, lit/puffed below.
+        let mut smoke: Vec<[f32; 3]> = Vec::new();
+        let mut domes: Vec<[f32; 3]> = Vec::new();
+        let rcx = (rx0 + rx1) * 0.5;
+        let rcz = (rz0 + rz1) * 0.5;
+        let is_industrial = matches!(era, crate::sim::Era::Industrial);
+        let is_space = matches!(era, crate::sim::Era::Space);
         match btype {
             BuildKind::Watchtower => {
                 let deck = pieces::battlement(&mut s.lit, rx0, rz0, rx1, rz1, top_y);
                 beacon = Some([deck[0], deck[1] + 0.18, deck[2]]);
+                // a Space-age watchtower also wears a small sensor dome on its deck.
+                if is_space {
+                    domes.push(pieces::dome(&mut s.lit, deck[0], deck[2], 0.26, deck[1] + 0.12, &style));
+                }
             }
             BuildKind::Granary => {
-                // a tall straw cone centred on the top footprint — the store-hall read.
-                let rcx = (rx0 + rx1) * 0.5;
-                let rcz = (rz0 + rz1) * 0.5;
                 let radius = ((rx1 - rx0).max(rz1 - rz0)) * 0.5 + 0.16;
-                let peak = 0.6 + 0.22 * span.clamp(2.0, 6.0) / 6.0;
-                pieces::thatch_cone(&mut s.lit, rcx, rcz, radius, top_y, peak);
+                if is_space {
+                    // a store-hall in the Space age is a domed silo.
+                    domes.push(pieces::dome(&mut s.lit, rcx, rcz, radius, top_y, &style));
+                } else if is_industrial {
+                    // an Industrial granary is a brick mill with a tall smokestack.
+                    pieces::flat_roof_era(&mut s.lit, rx0, rz0, rx1, rz1, top_y, &style);
+                    let sh = 1.0 + 0.4 * span.clamp(2.0, 6.0) / 6.0;
+                    smoke.push(pieces::smokestack(&mut s.lit, rcx, rcz, top_y + 0.05, sh, &style));
+                } else {
+                    // a tall straw/shingle cone centred on the top footprint.
+                    let peak = 0.6 + 0.22 * span.clamp(2.0, 6.0) / 6.0;
+                    pieces::thatch_cone(&mut s.lit, rcx, rcz, radius, top_y, peak);
+                }
             }
             BuildKind::Longhouse => {
-                // a long, low pitch running the hall's length (walls dominate, not roof).
-                let peak = 0.42 + 0.10 * jit(8);
-                pieces::pitched_roof(&mut s.lit, rx0, rz0, rx1, rz1, top_y, peak);
+                if is_space {
+                    pieces::flat_roof_era(&mut s.lit, rx0, rz0, rx1, rz1, top_y, &style);
+                    domes.push(pieces::dome(&mut s.lit, rcx, rcz, ((rx1 - rx0).min(rz1 - rz0)) * 0.5, top_y, &style));
+                } else {
+                    // a long, low pitch running the hall's length.
+                    let peak = 0.42 + 0.10 * jit(8);
+                    pieces::pitched_roof_era(&mut s.lit, rx0, rz0, rx1, rz1, top_y, peak, &style);
+                    if is_industrial {
+                        // a hall in the machine age streams smoke from an end chimney.
+                        smoke.push(pieces::chimney(&mut s.lit, rx1 - 0.3, rcz, top_y + peak * 0.5, 0.5, &style));
+                    }
+                }
             }
             BuildKind::Home => {
-                if area >= 20.0 && stories >= 3 {
-                    pieces::flat_roof(&mut s.lit, rx0, rz0, rx1, rz1, top_y);
-                    // corner pillars + a small cap so the terrace reads as a crown.
+                let big = area >= 20.0 && stories >= 3;
+                if is_space {
+                    // a sleek metal-and-glass block crowned with a dome.
+                    pieces::flat_roof_era(&mut s.lit, rx0, rz0, rx1, rz1, top_y, &style);
+                    domes.push(pieces::dome(&mut s.lit, rcx, rcz, ((rx1 - rx0).min(rz1 - rz0)) * 0.5 + 0.05, top_y, &style));
+                } else if big {
+                    pieces::flat_roof_era(&mut s.lit, rx0, rz0, rx1, rz1, top_y, &style);
                     for (px, pz) in [(rx0 + 0.2, rz0 + 0.2), (rx1 - 0.2, rz1 - 0.2), (rx0 + 0.2, rz1 - 0.2), (rx1 - 0.2, rz0 + 0.2)] {
                         pieces::pillar(&mut s.lit, px, top_y + 0.1, pz, 0.4);
                     }
+                    if is_industrial {
+                        smoke.push(pieces::smokestack(&mut s.lit, rcx, rcz, top_y + 0.10, 0.9, &style));
+                    }
                 } else {
-                    // a modest pitch (walls should dominate, not the roof) that grows a
-                    // touch with span so wide buildings still read as roofed.
+                    // a modest pitch that grows a touch with span.
                     let peak = 0.38 + 0.16 * jit(8) + 0.14 * (span - 3.0).clamp(0.0, 4.0) / 4.0;
-                    pieces::pitched_roof(&mut s.lit, rx0, rz0, rx1, rz1, top_y, peak);
+                    pieces::pitched_roof_era(&mut s.lit, rx0, rz0, rx1, rz1, top_y, peak, &style);
+                    if is_industrial {
+                        // the Industrial-age cottage signature: a brick chimney puffing soot.
+                        let cx2 = rx0 + (rx1 - rx0) * (0.28 + 0.4 * jit(45));
+                        smoke.push(pieces::chimney(&mut s.lit, cx2, rcz, top_y + peak * 0.45, 0.55, &style));
+                    }
                 }
             }
         }
@@ -1287,13 +1417,19 @@ fn build_structures(
             pieces::pillar(&mut s.lit, px, base_y + 0.05, pz, h_total);
         }
 
-        // WARM GLOWING WINDOWS: an additive bloom at each window pane so they read
-        // as lit from within — lovely at the golden hour, and the building's life.
-        // Brighter as the sun lowers (the warmth carries the dusk).
+        // GLOWING WINDOWS: an additive bloom at each window pane so they read as lit
+        // from within. Warm hearth-light through the early eras; a COOL electric blue-
+        // white in the Space age (the strongest night-time read of an advanced village).
+        // Brighter as the sun lowers (the glow carries the dusk).
         let warmth = (1.0 - s.sky.daylight) * 0.6 + 0.4;
+        let (g_outer, g_inner) = if is_space {
+            (0x6fb8ff, 0xdff0ff) // cool electric
+        } else {
+            (0xffb24e, 0xfff0d0) // warm hearth
+        };
         for c in &window_lights {
-            glow(s, *c, 0.22, Color::hex(0xffb24e, 0.28 * warmth));
-            glow(s, *c, 0.10, Color::hex(0xfff0d0, 0.40 * warmth));
+            glow(s, *c, 0.22, Color::hex(g_outer, 0.28 * warmth));
+            glow(s, *c, 0.10, Color::hex(g_inner, 0.40 * warmth));
         }
         // a watchtower's BEACON: a small fire-pot on the crown, glowing warm — the
         // lookout reads as lit + watching at the golden hour and into the dusk.
@@ -1301,6 +1437,25 @@ fn build_structures(
             pieces::pillar(&mut s.lit, b[0], b[1] - 0.18, b[2], 0.16);
             glow(s, b, 0.30, Color::hex(0xff8a2a, 0.55 * warmth + 0.18));
             glow(s, b, 0.14, Color::hex(0xffe2a0, 0.6 * warmth + 0.2));
+        }
+        // INDUSTRIAL smoke: a soft soot plume drifting up from each chimney/stack — a
+        // few translucent grey puffs, animated up + sideways on _time so a machine-age
+        // village reads as working. Live render only.
+        for sm in &smoke {
+            for p in 0..3u32 {
+                let t = (time * 0.45 + sm[0] * 0.7 + p as f32 * 0.6).fract();
+                let rise = 0.18 + t * 0.85;
+                let drift = (t * 2.4 + p as f32).sin() * 0.18;
+                let r = 0.12 + t * 0.20;
+                let fade = (1.0 - t) * 0.30;
+                glow(s, [sm[0] + drift, sm[1] + rise, sm[2]], r, Color::hex(0x9a9690, fade));
+            }
+        }
+        // SPACE dome glow: a cool electric halo on each glass cupola so the far-future
+        // blocks read as luminous tech, day or night.
+        for d in &domes {
+            glow(s, *d, 0.34, Color::hex(0x7fd0ff, 0.30 + 0.18 * warmth));
+            glow(s, *d, 0.16, Color::hex(0xeaf6ff, 0.40 + 0.18 * warmth));
         }
     }
 }
@@ -1351,18 +1506,44 @@ fn push_part(
     geo::push_box(out, [wx, gy + up, wz], half, heading, color);
 }
 
+/// Gait gate for a heading-oriented animal: the render position lerps toward the
+/// grid cell each frame, so the *gap* between the smoothed render pos and the grid
+/// target is a clean "is it moving" signal — wide while the animal is crossing
+/// cells, ~0 when it has settled. Mapped through a smoothstep into [0,1] so the
+/// gait eases in/out instead of snapping. Pure read of render state.
+#[inline]
+fn anim_move01(rx: f32, ry: f32, tx: f32, ty: f32) -> f32 {
+    smoothstep(0.04, 0.45, (rx - tx).hypot(ry - ty))
+}
+
+/// A swung four-legged limb: a leg whose foot strides fore/aft about its hip by
+/// `swing` radians (a believable trotting plant-and-lift), gated by `mv` so it
+/// only strides while the animal moves and stands square when idle. `fz/sx` are
+/// the hip's fwd/side offset, `leg_h` the leg half-height, `up` the hip height.
+#[allow(clippy::too_many_arguments)]
+fn push_leg(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, sc: f32, fz: f32, sx: f32, up: f32, leg_h: f32, swing: f32, color: [f32; 4]) {
+    let (ss, cs) = swing.sin_cos();
+    // the foot swings forward and lifts as the leg rotates about the hip.
+    let f = fz + ss * leg_h;
+    let u = up - cs * leg_h * 0.5;
+    push_part(out, x, gy, z, heading, sc, f, sx, u.max(0.04), [0.05, leg_h * 0.5, 0.05], color);
+}
+
 /// A natural wolf: a lean grey pack hunter, oriented by `heading`, with a four-beat
 /// loping gait. Distinct from the dark red-eyed stalker `push_wolf`: cooler grey fur,
-/// no menace eyes, just a wild animal. `flash` brightens it on a strike.
-fn push_wild_wolf(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, time: f32, flash: f32) {
-    let lope = (time * 9.0 + x).sin() * 0.05;
+/// no menace eyes, just a wild animal. `flash` brightens it on a strike. `mv` ∈ [0,1]
+/// is how hard it's moving — the legs trot when it runs and stand square when idle.
+fn push_wild_wolf(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, time: f32, flash: f32, mv: f32) {
+    // a fast trot phase, gated so an idle wolf doesn't paddle on the spot.
+    let phase = time * 12.0 + x * 1.7;
+    let lope = phase.sin() * 0.05 * mv;
     let warm = flash * 0.5;
     let fur = Color::hex(0xa7adba, 1.0).0; // cool light grey — reads against the grass
     let fur = [fur[0] + warm, fur[1] + warm * 0.5, fur[2] + warm * 0.4, 1.0];
     let dark = Color::hex(0x686672, 1.0).0; // darker grey
     let snout = Color::hex(0x3f3d45, 1.0).0;
     let sc = 1.5; // enlarged so the pack reads clearly at the village zoom
-    // body (long axis along fwd)
+    // body (long axis along fwd) — a slight bob with the lope.
     push_part(out, x, gy, z, heading, sc, 0.0, 0.0, 0.40 + lope, [0.34, 0.15, 0.17], fur);
     // shoulders a touch taller
     push_part(out, x, gy, z, heading, sc, 0.14, 0.0, 0.46 + lope, [0.16, 0.15, 0.16], fur);
@@ -1374,18 +1555,20 @@ fn push_wild_wolf(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f3
     push_part(out, x, gy, z, heading, sc, 0.30, -0.07, 0.60, [0.03, 0.05, 0.03], dark);
     // bushy tail trailing
     push_part(out, x, gy, z, heading, sc, -0.42, 0.0, 0.46, [0.16, 0.05, 0.05], fur);
-    // four legs with a diagonal trot offset
-    let g4 = (time * 9.0 + x).sin() * 0.04;
-    for (fz, sx, ph) in [(0.22f32, 0.13f32, 0.0f32), (0.22, -0.13, 1.0), (-0.24, 0.13, 1.0), (-0.24, -0.13, 0.0)] {
-        let step = g4 * if ph > 0.5 { 1.0 } else { -1.0 };
-        push_part(out, x, gy, z, heading, sc, fz, sx, 0.16 + step.max(0.0), [0.05, 0.16, 0.05], dark);
+    // four legs trotting on a diagonal beat (front-left + rear-right together).
+    let sw = phase.sin() * 0.55 * mv;
+    for (fz, sx, d) in [(0.22f32, 0.13f32, 1.0f32), (0.22, -0.13, -1.0), (-0.24, 0.13, -1.0), (-0.24, -0.13, 1.0)] {
+        push_leg(out, x, gy, z, heading, sc, fz, sx, 0.30, 0.20, sw * d, dark);
     }
 }
 
 /// A bear: big, brown, powerful, solitary — a bulky body, broad head, stumpy legs,
-/// rounded ears. Oriented by `heading`, slow ambling sway. `flash` warms it on a maul.
-fn push_bear(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, time: f32, flash: f32) {
-    let sway = (time * 4.0 + z).sin() * 0.04;
+/// rounded ears. Oriented by `heading`, a slow heavy amble. `flash` warms it on a maul.
+/// `mv` ∈ [0,1] gates the lumbering stride (a still bear stands square).
+fn push_bear(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, time: f32, flash: f32, mv: f32) {
+    // slow, heavy cadence — the bear ambles, it does not trot.
+    let phase = time * 6.0 + z * 1.3;
+    let sway = phase.sin() * 0.04 * mv;
     let warm = flash * 0.5;
     let coat = Color::hex(0x5a3a22, 1.0).0; // warm brown
     let coat = [coat[0] + warm, coat[1] + warm * 0.4, coat[2] + warm * 0.2, 1.0];
@@ -1396,31 +1579,37 @@ fn push_bear(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, ti
     push_part(out, x, gy, z, heading, sc, 0.0, 0.0, 0.50 + sway, [0.40, 0.28, 0.26], coat);
     // a hump at the shoulders (grizzly silhouette)
     push_part(out, x, gy, z, heading, sc, 0.16, 0.0, 0.66, [0.18, 0.16, 0.20], coat);
-    // broad head out front, low
-    push_part(out, x, gy, z, heading, sc, 0.42, 0.0, 0.50, [0.18, 0.16, 0.18], dark);
-    push_part(out, x, gy, z, heading, sc, 0.58, 0.0, 0.44, [0.10, 0.09, 0.11], muzzle);
+    // broad head out front, low — sways gently with the amble.
+    push_part(out, x, gy, z, heading, sc, 0.42, 0.0, 0.50 + sway * 0.5, [0.18, 0.16, 0.18], dark);
+    push_part(out, x, gy, z, heading, sc, 0.58, 0.0, 0.44 + sway * 0.5, [0.10, 0.09, 0.11], muzzle);
     // round ears
     push_part(out, x, gy, z, heading, sc, 0.38, 0.13, 0.70, [0.05, 0.05, 0.05], dark);
     push_part(out, x, gy, z, heading, sc, 0.38, -0.13, 0.70, [0.05, 0.05, 0.05], dark);
-    // four heavy legs
-    for (fz, sx) in [(0.26f32, 0.20f32), (0.26, -0.20), (-0.26, 0.20), (-0.26, -0.20)] {
-        push_part(out, x, gy, z, heading, sc, fz, sx, 0.18, [0.09, 0.20, 0.09], dark);
+    // four heavy legs with a slow, low-amplitude lope (diagonal beat).
+    let sw = phase.sin() * 0.36 * mv;
+    for (fz, sx, d) in [(0.26f32, 0.20f32, 1.0f32), (0.26, -0.20, -1.0), (-0.26, 0.20, -1.0), (-0.26, -0.20, 1.0)] {
+        push_leg(out, x, gy, z, heading, sc, fz, sx, 0.36, 0.22, sw * d, dark);
     }
 }
 
 /// A deer: tan, slender, antlered — a graceful body on long thin legs, a raised neck
 /// and a small head with a branching antler rack, and a flick of white tail. Oriented
 /// by `heading`. When `fleeing`, it poses alert/bounding (head higher, longer stride).
-fn push_deer(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, time: f32, fleeing: bool) {
-    let speed = if fleeing { 13.0 } else { 5.0 };
-    let bound = (time * speed + x).sin() * if fleeing { 0.10 } else { 0.03 };
+/// `mv` ∈ [0,1] gates the stride so a grazing deer stands and a travelling one steps;
+/// a fleeing deer bounds hard regardless.
+fn push_deer(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, time: f32, fleeing: bool, mv: f32) {
+    // a fleeing deer bounds at full tilt; otherwise stride tracks how hard it's moving.
+    let drive = if fleeing { 1.0 } else { mv };
+    let cadence = if fleeing { 16.0 } else { 9.0 };
+    let phase = time * cadence + x * 1.9;
+    let bound = phase.sin() * if fleeing { 0.10 } else { 0.04 } * drive;
     let tan = Color::hex(0xcf9a5e, 1.0).0; // warm tan — a shade brighter than the grass
     let pale = Color::hex(0xeed3a6, 1.0).0;
     let dark = Color::hex(0x4a3320, 1.0).0;
     let antler = Color::hex(0xb89a6e, 1.0).0;
     let neck_up = if fleeing { 0.78 } else { 0.70 };
     let sc = 1.45; // graceful but legible at the village zoom
-    // slim body
+    // slim body, rises a touch on each bound
     push_part(out, x, gy, z, heading, sc, 0.0, 0.0, 0.50 + bound.max(0.0), [0.26, 0.12, 0.14], tan);
     // raised neck (forward + up)
     push_part(out, x, gy, z, heading, sc, 0.24, 0.0, neck_up, [0.06, 0.12, 0.06], tan);
@@ -1437,10 +1626,10 @@ fn push_deer(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, ti
     push_part(out, x, gy, z, heading, sc, 0.34, -0.10, neck_up + 0.36, [0.05, 0.015, 0.015], antler);
     // white scut tail
     push_part(out, x, gy, z, heading, sc, -0.26, 0.0, 0.52, [0.04, 0.05, 0.04], pale);
-    // four long thin legs, a bounding stride when fleeing
-    let stride = bound * if fleeing { 1.0 } else { 0.5 };
-    for (fz, sx, ph) in [(0.18f32, 0.10f32, 1.0f32), (0.18, -0.10, -1.0), (-0.20, 0.10, -1.0), (-0.20, -0.10, 1.0)] {
-        push_part(out, x, gy, z, heading, sc, fz + stride * ph * 0.4, sx, 0.18, [0.035, 0.22, 0.035], dark);
+    // four long thin legs, a diagonal trot that lengthens into a bound when fleeing.
+    let sw = phase.sin() * if fleeing { 0.7 } else { 0.5 } * drive;
+    for (fz, sx, d) in [(0.18f32, 0.10f32, 1.0f32), (0.18, -0.10, -1.0), (-0.20, 0.10, -1.0), (-0.20, -0.10, 1.0)] {
+        push_leg(out, x, gy, z, heading, sc, fz, sx, 0.40, 0.22, sw * d, dark);
     }
 }
 
@@ -1631,6 +1820,31 @@ fn inspector(s: &mut Scene, world: &GameWorld, selected: Option<usize>, sw: f32,
             }
             yy += 24.0;
         }
+        // TECH ERAS (Civilization Sprint 1): one line per living village — its banner,
+        // name, era and research bar — so the world's tech state is legible at a glance
+        // and you can SEE which settlement has advanced. Off an eras world, skipped.
+        if world.eras && !world.villages.is_empty() {
+            use crate::sim::{Era, ERA_THRESHOLDS};
+            yy += 10.0;
+            s.text("TECH ERAS", px + 18.0, yy, 11.0, Color::hex(CORAL, 1.0));
+            yy += 18.0;
+            for v in &world.villages {
+                if v.population == 0 {
+                    continue;
+                }
+                s.orb(px + 24.0, yy + 6.0, 5.0, 0.8, Color::hex(v.hue, 1.0));
+                s.text(format!("{}  ·  {}", v.name, v.era.name()), px + 36.0, yy, 11.5, Color::hex(PAPER, 0.92));
+                let cur = v.era as usize;
+                let frac = if matches!(v.era, Era::Space) {
+                    1.0
+                } else {
+                    let (lo, hi) = (ERA_THRESHOLDS[cur], ERA_THRESHOLDS[cur + 1]);
+                    ((v.research - lo) / (hi - lo)).clamp(0.0, 1.0)
+                };
+                bar(s, px + pw - 92.0, yy + 5.0, 74.0, frac, Color::hex(0xffc24e, 1.0));
+                yy += 20.0;
+            }
+        }
         yy += 10.0;
         s.text("WHAT'S RUNNING", px + 18.0, yy, 11.0, Color::hex(CORAL, 1.0));
         yy += 18.0;
@@ -1760,6 +1974,32 @@ fn inspector(s: &mut Scene, world: &GameWorld, selected: Option<usize>, sw: f32,
             s.orb(lx + 5.0, y + 5.0, 5.0, 0.9, Color::hex(v.hue, 1.0));
             s.text(format!("of {} · pop {}", v.name, v.population), lx + 16.0, y, 11.5, Color::hex(v.hue, 0.95));
             y += 17.0;
+            // TECH ERA + RESEARCH (Civilization Sprint 1): which age this settlement has
+            // climbed to, and how far toward the next. A no-op label off an eras world.
+            if world.eras {
+                use crate::sim::{Era, ERA_THRESHOLDS};
+                // progress within the current era band toward the next threshold.
+                let cur = v.era as usize;
+                let lo = ERA_THRESHOLDS[cur];
+                let frac = match v.era.next() {
+                    Some(_) => {
+                        let hi = ERA_THRESHOLDS[cur + 1];
+                        ((v.research - lo) / (hi - lo)).clamp(0.0, 1.0)
+                    }
+                    None => 1.0, // Space — topped out
+                };
+                s.text(format!("TECH — {}", v.era.name()), lx, y, 11.0, Color::hex(0xffc24e, 1.0));
+                let label = if matches!(v.era, Era::Space) {
+                    "research maxed".to_string()
+                } else {
+                    format!("→ {}", v.era.next().map(|e| e.name()).unwrap_or(""))
+                };
+                s.text(label, lx + cw - 96.0, y, 10.0, Color::hex(MUTED, 0.9));
+                y += 15.0;
+                bar(s, lx, y + 1.0, cw - 64.0, frac, Color::hex(0xffc24e, 1.0));
+                s.text(format!("{}%", (frac * 100.0) as u32), lx + cw - 58.0, y - 1.0, 10.5, Color::hex(MUTED, 1.0));
+                y += 18.0;
+            }
             // gather this village's allies and enemies from the relation matrix.
             let mut allies: Vec<&str> = Vec::new();
             let mut enemies: Vec<&str> = Vec::new();
