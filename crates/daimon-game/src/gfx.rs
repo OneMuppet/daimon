@@ -252,9 +252,11 @@ impl Renderer {
                 },
             ],
         });
+        // The post/blit pass also reads the world uniform (sun direction + daylight)
+        // so it can place god-rays and tune the colour grade with the time-of-day.
         let blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("blit-layout"),
-            bind_group_layouts: &[Some(&blit_bgl)],
+            bind_group_layouts: &[Some(&blit_bgl), Some(&world_bgl)],
             immediate_size: 0,
         });
         let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -282,11 +284,14 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        // Linear sampling so the post pass can take smooth blurred bloom taps off
+        // the low-res RT (and the upscale gains a soft painterly edge rather than
+        // hard stair-steps — reads more cinematic than chunky here).
         let blit_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("blit-sampler"),
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             ..Default::default()
@@ -625,6 +630,7 @@ impl Renderer {
             });
             pass.set_pipeline(&self.blit_pipeline);
             pass.set_bind_group(0, &self.blit_bind, &[]);
+            pass.set_bind_group(1, &self.world_bg, &[]);
             pass.draw(0..3, 0..1);
 
             if qn > 0 {

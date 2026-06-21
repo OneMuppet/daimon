@@ -70,26 +70,85 @@ impl Game {
         // unchanged.
         genome.g[22] = 1.0; // can_die on — permadeath + fear of death
         genome.g[23] = 1.0; // can_grieve on — real bereavement for bonded losses
-        // OPEN WORLD: the live village runs the seasonal year. can_provision lets the
-        // minds stock the granary in the good months and draw it down through winter;
-        // `world.set_open_world(true)` below turns the seasons/cold/granary on. As with
-        // the other live-only genes, `Genome::showcase()` itself stays bit-identical
-        // (provision off) so every AC/proof/fitness run is unchanged.
-        genome.g[24] = 1.0; // can_provision on — seasonal stockpiling for winter
+        // PROVISIONING on so minds adopt the gather goal — in the live game its targets
+        // are BUILDING MATERIALS (wood from trees, stone from quarry rocks), hauled into
+        // the village stockpile that every wall consumes (materials economy, below).
+        // Like the others, flipped on a clone; `Genome::showcase()` stays bit-identical
+        // (g[24]=0) so every AC/proof/fitness run is unchanged.
+        genome.g[24] = 1.0; // can_provision on — minds gather materials for building
+        // LIFE-CYCLE on for the live game: the village becomes a living lineage —
+        // adults meet mates and form lasting pair-bonds, settled fed pairs have
+        // INHERITED children, the young grow up, and elders pass of old age. Like the
+        // others, flipped on a clone of showcase; `Genome::showcase()` itself stays
+        // bit-identical (g[29..33]=0) so every AC/proof/fitness run is unchanged.
+        genome.g[29] = 1.0; // can_mate on — seek a partner, form a romantic pair-bond
+        genome.g[30] = 1.0; // can_reproduce on — a settled pair has inherited children
+        genome.g[31] = 1.0; // can_age on — minds age and die a peaceful natural death
+        genome.g[32] = 1.0; // feel_happiness on — surface felt contentment per-mind
+        // SOCIETY on for the live game: minds belong to VILLAGES that form alliances
+        // and rivalries. Like the others, flipped on a clone of showcase; the preset
+        // itself stays bit-identical (g[33]=0) so every AC/proof/fitness run is unchanged.
+        genome.g[33] = 1.0; // village_affinity on — feel a settlement identity, be wary of enemies
         // Seed 0x61 was chosen (from a sweep) for the believable mortality arc: with
         // the softened stalker, the village bonds and persists, then ~2 minutes in
         // loses one bonded member to the stalker — whom the survivors genuinely
         // grieve — and the remaining five live on. An occasional, meaningful loss,
         // never a bloodbath (verified stable at 5/6 over 18k ticks).
-        let mut world = GameWorld::with_genome(0x61, 6, &genome);
-        // turn the year on: seasons, winter cold, the granary and gather/store.
-        world.set_open_world(true);
-        // Tune the live world so death is a meaningful, occasional event — not a
-        // bloodbath. The fair world's stalker already moves every other tick; we
-        // ease its bite so a village bonds and persists for minutes, then now and
-        // then loses someone (whom the others grieve), rather than churning.
+        // A big, teeming island: many more minds on a much larger landmass than the
+        // original 6-on-40x26, so the showcase reads as a living world, not a hamlet.
+        // Density is kept near the tuned village's (≈1 mind / 150 cells) so behaviour
+        // stays believable; the camera frames the whole island below.
+        const VILLAGE_POP: usize = 64;
+        const VILLAGE_W: i32 = 124;
+        const VILLAGE_H: i32 = 84;
+        let mut world = GameWorld::with_genome_sized(0x61, VILLAGE_POP, &genome, VILLAGE_W, VILLAGE_H, 7);
+        // PERPETUAL GROWING SEASON for the big showcase. The seasonal year's winter
+        // halts food and relies on a single central granary the village stocks in the
+        // good months — tuned for a tight 6-mind hamlet, it cannot feed 64 minds
+        // spread across a large island (the hauls are too long, food too dispersed),
+        // so the first winter wiped the village. Left as a year-round growing season,
+        // the 64-mind village thrives (~63/64 stable over thousands of ticks). Death
+        // is still real and grievable — the softened stalker takes the occasional
+        // member, whom the survivors mourn. (Seasonal provisioning at scale is a
+        // future sim fix; the harness/AC46 still exercise the full seasonal year.)
         world.soften_stalker();
-        let cam = Camera::new(world.w as f32 * 0.5, world.h as f32 * 0.5);
+        // MATERIALS ECONOMY on for the live showcase: a grove of trees + quarry rocks
+        // the minds harvest into a shared village stockpile, and every wall they build
+        // consumes wood + stone from it — no materials, no building. Live-only: the
+        // seeded harness/AC/proof paths never call this (they keep building free and
+        // byte-identical). Seeds the resource nodes off side-RNGs so the main stream is
+        // untouched, plus a starter stockpile so the first buildings rise straight away.
+        world.set_materials_world(true);
+        // NATURAL ECOSYSTEM on for the live showcase: wolves roam in loose packs and
+        // hunt, a solitary bear roams slowly, and a deer herd grazes and flees. The
+        // minds perceive wolves & bears as predators and flee them through the EXISTING
+        // cognition — a wolf-kill is grieved exactly like a stalker-kill. Live-only: the
+        // seeded harness/AC/proof paths never call this (they keep only the single
+        // stalker and stay byte-identical). All wildlife is seeded + stepped off a
+        // dedicated side-RNG so the main deterministic stream is untouched. Tuned so the
+        // village mostly thrives with the occasional grievable loss, not a bloodbath.
+        world.set_wildlife(true);
+        // LIFE-CYCLE on for the live showcase: aging, pair-bonds, inherited children,
+        // natural death. Live-only and seeded off a dedicated side-RNG, so the seeded
+        // harness/AC/proof paths (which never call this) stay byte-identical. The
+        // population is capped so the lineage turns over without exploding — a few
+        // hundred at most on this island (~3× the founding 64).
+        world.set_lifecycle(true, 90);
+        // SOCIETY on for the live showcase: cluster the founding 64 into distinct
+        // VILLAGES (kinship keeps each coherent as the lineage turns over), whose
+        // ALLIANCES and RIVALRIES emerge + shift from how they interact. Live-only and
+        // seeded off a dedicated side-RNG, so the seeded harness/AC/proof paths (which
+        // never call this) stay byte-identical. Four villages reads as a small society
+        // on this island without fragmenting the population below viability.
+        world.set_society(true, 4);
+        let mut cam = Camera::new(world.w as f32 * 0.5, world.h as f32 * 0.5);
+        // A closer cinematic frame than "whole island" so the minds and their built
+        // structures read with real detail on load (buildings are tiny at full-island
+        // zoom); the slow camera orbit + scroll-zoom still reveal the island's full
+        // sprawl. ≈0.34× the larger axis shows a generous, legible slice of the village
+        // — close enough that the wolves, bears, and deer of the ecosystem read clearly
+        // on load, while the orbit + scroll-zoom still reveal the whole island.
+        cam.zoom = (world.w.max(world.h) as f32) * 0.34;
         Game {
             world,
             cam,
@@ -135,6 +194,16 @@ impl Game {
             Some(ev) => &ev.world,
             None => &self.world,
         }
+    }
+
+    /// Pan the camera along its ground basis (WASD). `rx` = right(+)/left(-),
+    /// `fy` = forward(+)/back(-); the step scales with zoom so it feels consistent
+    /// at every distance.
+    fn pan(&mut self, rx: f32, fy: f32) {
+        let (right, fwd) = crate::math::pan_basis(self.cam.yaw);
+        let step = 0.08 * self.cam.zoom;
+        self.cam.cx += (right.0 * rx + fwd.0 * fy) * step;
+        self.cam.cy += (right.1 * rx + fwd.1 * fy) * step;
     }
 
     /// Advance the simulation on a fixed cognitive tick, scaled by speed.
@@ -302,9 +371,17 @@ impl ApplicationHandler<AppEvent> for App {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 * 0.02,
                 };
-                // scroll up (amt > 0) zooms IN → smaller half-extent.
+                // Zoom toward the CURSOR: capture the world point under the mouse,
+                // change the zoom, then pan so that same point is back under the
+                // cursor. scroll up (amt > 0) zooms IN → smaller half-extent. Range
+                // widened so you can pull right out past the whole island.
+                let (w, h) = (self.game.world.w, self.game.world.h);
+                let before = self.game.cam.pick(self.game.mouse.0, self.game.mouse.1, sw, sh, w, h);
                 let factor = (1.0 - amt * 0.12).clamp(0.6, 1.5);
-                self.game.cam.zoom = (self.game.cam.zoom * factor).clamp(6.0, 32.0);
+                self.game.cam.zoom = (self.game.cam.zoom * factor).clamp(4.0, 95.0);
+                let after = self.game.cam.pick(self.game.mouse.0, self.game.mouse.1, sw, sh, w, h);
+                self.game.cam.cx += before.0 - after.0;
+                self.game.cam.cy += before.1 - after.1;
             }
 
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
@@ -335,7 +412,14 @@ impl ApplicationHandler<AppEvent> for App {
                         );
                         self.game.world.feed(wx, wy);
                     }
-                    Key::Character("q") | Key::Character("Q") => {
+                    // Q/E rotate the map; WASD pan it (like click-drag).
+                    Key::Character("q") | Key::Character("Q") => self.game.cam.yaw -= 0.12,
+                    Key::Character("e") | Key::Character("E") => self.game.cam.yaw += 0.12,
+                    Key::Character("w") | Key::Character("W") => self.game.pan(0.0, 1.0),
+                    Key::Character("s") | Key::Character("S") => self.game.pan(0.0, -1.0),
+                    Key::Character("a") | Key::Character("A") => self.game.pan(-1.0, 0.0),
+                    Key::Character("d") | Key::Character("D") => self.game.pan(1.0, 0.0),
+                    Key::Character("g") | Key::Character("G") => {
                         // toggle quantum-cognitive decision mode across the village
                         self.game.hud.quantum = !self.game.hud.quantum;
                         let q = self.game.hud.quantum;
@@ -385,6 +469,8 @@ impl ApplicationHandler<AppEvent> for App {
                     cycle: ev.cycle(),
                     last: ev.last,
                 });
+                // Fully user-driven camera: WASD pan, Q/E rotate, scroll-zoom to the
+                // cursor. No auto-orbit, so manual control never fights a drift.
                 let scene = view::build_with(
                     self.game.view_world(),
                     &self.game.cam,

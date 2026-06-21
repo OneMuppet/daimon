@@ -81,6 +81,36 @@ impl TheoryOfMind {
             });
     }
 
+    /// Seed (or strengthen to) a **family / pair bond** toward a peer: insert a
+    /// model with the given name and a disposition raised to at least `strength`.
+    /// Used by the live world's life-cycle to record that a parent and child (or a
+    /// pair-bonded couple) are family from the moment of birth/pairing — so the loss
+    /// of family is genuinely grieved, not treated as a stranger's passing. The bond
+    /// is only ever *raised*, never lowered, so an existing warmer feeling stands.
+    pub fn bond_with(&mut self, id: EntityId, name: &str, strength: f32, tick: u64) {
+        let s = strength.clamp(-1.0, 1.0);
+        self.models
+            .entry(id)
+            .and_modify(|m| {
+                m.disposition = m.disposition.max(s);
+                m.last_seen = tick;
+                m.interactions += 1;
+            })
+            .or_insert_with(|| AgentModel {
+                id,
+                name: name.to_string(),
+                disposition: s,
+                believed_goal: None,
+                believed_drive: None,
+                believed_tick: 0,
+                prelim_drive: None,
+                last_pos: None,
+                last_seen: tick,
+                interactions: 1,
+                death_tick: None,
+            });
+    }
+
     /// Mark a peer as dead at `tick`, keeping its model (the continuing bond). The
     /// bond strength at time of death is its `disposition` — returned so the caller
     /// can scale grief by how close they were. Returns `None` if we never knew them.

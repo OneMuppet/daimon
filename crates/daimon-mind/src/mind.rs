@@ -73,6 +73,29 @@ pub struct MindConfig {
     /// world without provisioning adopts no Provision goal and stays bit-identical.
     #[serde(default)]
     pub can_provision: bool,
+    /// Whether the agent seeks a mate and forms a lasting romantic pair-bond
+    /// (prefers proximity to a chosen partner). Off by default — a non-mating mind
+    /// seeks no partner and the seeded cycle stays bit-identical.
+    #[serde(default)]
+    pub can_mate: bool,
+    /// Whether the agent participates in reproduction (a settled bonded pair may
+    /// have an inherited child). Off by default; population growth is gated by the
+    /// world's `lifecycle` flag, never by the mind alone.
+    #[serde(default)]
+    pub can_reproduce: bool,
+    /// Whether the agent ages toward a natural death. Off by default — an ageless
+    /// mind senesces never and the world's age clock stays inert.
+    #[serde(default)]
+    pub can_age: bool,
+    /// Whether the agent surfaces its felt happiness (well-being readout). Off by
+    /// default — `happiness()` then returns a flat neutral value.
+    #[serde(default)]
+    pub feel_happiness: bool,
+    /// Whether the agent feels a SETTLEMENT identity (Sprint 4 society) — it belongs
+    /// to a village and grows wary of an enemy village's members. Off by default —
+    /// the mind then senses no factions and biases its movement for none.
+    #[serde(default)]
+    pub village_affinity: bool,
 }
 
 impl Default for MindConfig {
@@ -87,6 +110,11 @@ impl Default for MindConfig {
             can_die: false,
             can_grieve: false,
             can_provision: false,
+            can_mate: false,
+            can_reproduce: false,
+            can_age: false,
+            feel_happiness: false,
+            village_affinity: false,
         }
     }
 }
@@ -418,6 +446,13 @@ impl Mind {
     pub fn social(&self) -> &TheoryOfMind {
         &self.social
     }
+    /// Seed (or raise) a **family / pair bond** toward a peer — see
+    /// [`TheoryOfMind::bond_with`]. The live world calls this at a birth/pairing so
+    /// kin start as kin (and a family death is grieved, not shrugged off). No-op for
+    /// the seeded harness, which never calls it.
+    pub fn bond_with(&mut self, id: EntityId, name: &str, strength: f32, tick: u64) {
+        self.social.bond_with(id, name, strength, tick);
+    }
     pub fn anticipation(&self) -> &Anticipation {
         &self.anticipation
     }
@@ -563,6 +598,62 @@ impl Mind {
     /// Whether this mind provisions (for inspection / the harness).
     pub fn can_provision(&self) -> bool {
         self.cfg.can_provision
+    }
+    /// Give the agent the *option* to seek a mate and form a romantic pair-bond.
+    /// Off by default; the world's `lifecycle` flag owns the actual pairing.
+    pub fn set_can_mate(&mut self, on: bool) {
+        self.cfg.can_mate = on;
+    }
+    /// Whether this mind seeks a mate (the world reads this to decide pairing).
+    pub fn can_mate(&self) -> bool {
+        self.cfg.can_mate
+    }
+    /// Give the agent the *option* to reproduce (the world spawns the child).
+    pub fn set_can_reproduce(&mut self, on: bool) {
+        self.cfg.can_reproduce = on;
+    }
+    /// Whether this mind reproduces (the world reads this when a pair is settled).
+    pub fn can_reproduce(&self) -> bool {
+        self.cfg.can_reproduce
+    }
+    /// Let the agent age toward a natural death. Off by default.
+    pub fn set_can_age(&mut self, on: bool) {
+        self.cfg.can_age = on;
+    }
+    /// Whether this mind ages (the world reads this to advance its age clock).
+    pub fn can_age(&self) -> bool {
+        self.cfg.can_age
+    }
+    /// Let the agent surface its felt happiness. Off by default.
+    pub fn set_feel_happiness(&mut self, on: bool) {
+        self.cfg.feel_happiness = on;
+    }
+    /// Whether this mind surfaces happiness (for inspection / the world).
+    pub fn feel_happiness(&self) -> bool {
+        self.cfg.feel_happiness
+    }
+    /// Let the agent feel a settlement identity (village-affinity). Off by default.
+    pub fn set_village_affinity(&mut self, on: bool) {
+        self.cfg.village_affinity = on;
+    }
+    /// Whether this mind feels a village identity (the world reads this for the
+    /// inter-village wariness nudge). Off by default — non-society worlds inert.
+    pub fn village_affinity(&self) -> bool {
+        self.cfg.village_affinity
+    }
+    /// The mind's **happiness** — its felt contentment in `[0,1]`, raised by met
+    /// needs / health / good feeling (and, in the live game, by family + safety via
+    /// the affect valence the world feeds it) and lowered by hunger / threat /
+    /// grief. This is the same intrinsic well-being the System-2 overlay learns
+    /// from, surfaced for display. Returns a flat neutral `0.5` when the
+    /// `feel_happiness` gene is off, so nothing about the seeded harness depends on
+    /// it. (Well-being itself is always computed read-only for the overlay.)
+    pub fn happiness(&self) -> f32 {
+        if self.cfg.feel_happiness {
+            self.wellbeing()
+        } else {
+            0.5
+        }
     }
     /// Install the System-2 learned overlay (called from `Genome::express`). When
     /// `enabled` is false the overlay is inert (zero bias, no learning), so the
@@ -1467,7 +1558,14 @@ impl Mind {
                 // foresight horizon and the homing window stay consistent.
                 let coming_home = me.store_dir.is_some();
                 let work = stocking || coming_home;
-                if needs_ok && (harvest || winter_soon || winter || coming_home) && work {
+                // MATERIALS ECONOMY (live-only): in the seasonless live showcase the
+                // gather signal is BUILDING MATERIALS, not a harvest — the world hands a
+                // `gather_dir` toward wood/stone whenever the village stockpile is low.
+                // So a standing gather_dir is reason enough to provision year-round. This
+                // only ever fires when `can_provision` is on (off in every harness path),
+                // so daimon-mind's harness behaviour is byte-identical.
+                let materials_to_haul = me.gather_dir.is_some();
+                if needs_ok && (harvest || winter_soon || winter || coming_home || materials_to_haul) && work {
                     let kind = GoalKind::Provision;
                     // a Mastery-strength pull: firm enough to hold against routine
                     // exploration, well below any survival/forage crisis.

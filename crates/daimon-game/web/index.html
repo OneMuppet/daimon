@@ -34,8 +34,12 @@
       </p>
     </div>
     <script type="module">
-      import init from "./daimon_game.js";
-      init()
+      // Cache-bust both the JS glue and the wasm so a refresh always loads the
+      // freshest build (browsers cache compiled wasm aggressively, even past a
+      // hard refresh). Fine for a dev showcase — always current.
+      const v = Date.now();
+      const { default: init } = await import("./daimon_game.js?v=" + v);
+      init("./daimon_game_bg.wasm?v=" + v)
         .then(() => {
           // winit attaches its own canvas; hide the loading splash.
           const s = document.getElementById("status");

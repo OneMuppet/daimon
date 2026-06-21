@@ -41,6 +41,11 @@ const GENE_NAMES: [&str; N_GENES] = [
     "nn_learn_rate",
     "nn_modulation",
     "herd_evasion",
+    "can_mate",
+    "can_reproduce",
+    "can_age",
+    "feel_happiness",
+    "village_affinity",
 ];
 
 fn show(label: &str, f: &Fitness) {

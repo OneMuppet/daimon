@@ -31,7 +31,7 @@ use crate::mind::{Mind, MindConfig};
 use crate::persona::Persona;
 
 /// Number of genes in the cognitive genome.
-pub const N_GENES: usize = 29;
+pub const N_GENES: usize = 34;
 
 /// A cognitive genome: a point in the architecture's tunable space, stored as
 /// `N_GENES` normalised genes in `[0,1]` and decoded into real cognitive knobs.
@@ -42,10 +42,55 @@ pub const N_GENES: usize = 29;
 /// (empowerment, consolidation, imagination, meta-motivation, quantum) ·
 /// `13` anticipatory-homeostasis foresight (lead ticks) · `14` DRR foraging
 /// (drive-reduction-rate goal-directed foraging under survival risk) · `15`
-/// commons-aware (contention-yielding/dispersing) foraging.
+/// commons-aware (contention-yielding/dispersing) foraging · `16..29` cultural /
+/// stigmergy / affect / can-fight / can-build / can-die / can-grieve /
+/// can-provision / nn-overlay (×3) / herd-evasion · `29..33` life-cycle
+/// (can-mate / can-reproduce / can-age / feel-happiness) · `33` village-affinity
+/// (Sprint 4 society: feel a settlement identity — drawn to same-village kin,
+/// wary of enemy-village minds).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Genome {
+    #[serde(with = "genes_serde")]
     pub g: [f32; N_GENES],
+}
+
+/// Serde for a fixed `[f32; N_GENES]` array. `serde`'s derive only covers arrays
+/// up to length 32, and the genome now has 33 genes, so we (de)serialise it as a
+/// length-checked sequence — semantically identical, just hand-rolled past the
+/// derive's ceiling. (The on-the-wire form is a plain JSON array of numbers.)
+mod genes_serde {
+    use super::N_GENES;
+    use serde::de::{Deserializer, Error as _, SeqAccess, Visitor};
+    use serde::ser::{SerializeTuple, Serializer};
+    use std::fmt;
+
+    pub fn serialize<S: Serializer>(g: &[f32; N_GENES], s: S) -> Result<S::Ok, S::Error> {
+        let mut t = s.serialize_tuple(N_GENES)?;
+        for v in g {
+            t.serialize_element(v)?;
+        }
+        t.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[f32; N_GENES], D::Error> {
+        struct GenesVisitor;
+        impl<'de> Visitor<'de> for GenesVisitor {
+            type Value = [f32; N_GENES];
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "an array of {N_GENES} f32 genes")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<[f32; N_GENES], A::Error> {
+                let mut g = [0.0f32; N_GENES];
+                for (i, slot) in g.iter_mut().enumerate() {
+                    *slot = seq
+                        .next_element()?
+                        .ok_or_else(|| A::Error::invalid_length(i, &self))?;
+                }
+                Ok(g)
+            }
+        }
+        d.deserialize_tuple(N_GENES, GenesVisitor)
+    }
 }
 
 /// Linear decode of a normalised gene into `[lo, hi]`.
@@ -89,6 +134,22 @@ impl Genome {
         g[26] = 0.0; // nn learning-rate 0 (no in-life plasticity)
         g[27] = 0.0; // nn modulation 0 (overlay contributes zero bias)
         g[28] = 0.0; // herd-evasion off (flee-straight-away — the incumbent behaviour)
+        // --- life-cycle genes (Sprint 3) — all default OFF in BOTH presets so every
+        // existing AC/proof/fitness run stays byte-identical: a mind with these off
+        // seeks no mate, draws no mating/aging RNG, and reports a flat happiness. The
+        // live game flips them on by cloning showcase, and the *population* changes
+        // (births/old-age deaths) live entirely behind the world's `lifecycle` flag.
+        g[29] = 0.0; // can-mate off (no pair-bond seeking — incumbent solitary social)
+        g[30] = 0.0; // can-reproduce off (a bonded pair never has children — incumbent)
+        g[31] = 0.0; // can-age off (ageless: no senescence, no natural death — incumbent)
+        g[32] = 0.0; // feel-happiness off (well-being not surfaced — incumbent)
+        // --- society gene (Sprint 4) — default OFF in BOTH presets so every existing
+        // AC/proof/fitness run stays byte-identical: a mind with it off feels no
+        // settlement identity and never biases its movement toward/away from another
+        // village. The whole inter-village SOCIETY (grouping, alliances, rivalries)
+        // lives in the world behind its `society` flag, off the dedicated `soc_rng`;
+        // the live game flips this gene on by cloning showcase.
+        g[33] = 0.0; // village-affinity off (no settlement identity — incumbent solitary)
         Genome { g }
     }
 
@@ -130,6 +191,11 @@ impl Genome {
             can_die: self.can_die(),
             can_grieve: self.can_grieve(),
             can_provision: self.can_provision(),
+            can_mate: self.can_mate(),
+            can_reproduce: self.can_reproduce(),
+            can_age: self.can_age(),
+            feel_happiness: self.feel_happiness(),
+            village_affinity: self.village_affinity(),
         }
     }
     /// Persona deltas in `[-0.3, 0.3]`, applied on top of a base character so the
@@ -255,6 +321,46 @@ impl Genome {
         // map [0.5,1.0] → [0.2,1.0] so even a freshly-flipped gene gives a real pull.
         lerp((self.g[28] - 0.5).max(0.0) * 2.0, 0.2, 1.0)
     }
+    /// Whether the mind *seeks a mate* — forms a lasting romantic PAIR-BOND with a
+    /// chosen partner (distinct from, and stronger than, ordinary friendship) and
+    /// prefers proximity to them. Off by default — a non-mating mind seeks no
+    /// partner and the whole seeded harness stays byte-identical (the live
+    /// pair-bond registry lives in the world behind its `lifecycle` flag).
+    pub fn can_mate(&self) -> bool {
+        self.g[29] >= 0.5
+    }
+    /// Whether the mind *reproduces* — a settled, fed, sheltered bonded pair may
+    /// have a CHILD whose genome + persona are inherited from both parents. Off by
+    /// default; population growth happens only when the world's `lifecycle` flag is
+    /// also on (the harness has a fixed population and never reproduces).
+    pub fn can_reproduce(&self) -> bool {
+        self.g[30] >= 0.5
+    }
+    /// Whether the mind *ages* — it accrues years and, past a lifespan, dies a
+    /// peaceful NATURAL death (distinct from predator/starvation), grievable by
+    /// family. Off by default — an ageless mind never senesces and draws no aging
+    /// RNG, so the harness stays byte-identical (the age clock + natural death live
+    /// in the world behind its `lifecycle` flag).
+    pub fn can_age(&self) -> bool {
+        self.g[31] >= 0.5
+    }
+    /// Whether the mind *surfaces happiness* — exposes its felt contentment
+    /// (well-being: bonds/family/safety/fullness up, hunger/threat/grief down) as a
+    /// readable signal. Off by default — `happiness()` then returns a flat neutral
+    /// value and nothing about the seeded cycle changes (well-being is still
+    /// computed read-only for the System-2 overlay regardless).
+    pub fn feel_happiness(&self) -> bool {
+        self.g[32] >= 0.5
+    }
+    /// Whether the mind *feels a settlement identity* — it belongs to a VILLAGE and
+    /// (Sprint 4 society) is drawn toward its own village's members and grows wary of
+    /// minds from an ENEMY village. Off by default — a mind with no village-affinity
+    /// senses no factions, biases its movement for none, and the whole seeded harness
+    /// stays byte-identical (the inter-village relation registry lives in the world
+    /// behind its `society` flag). The live game flips it on by cloning showcase.
+    pub fn village_affinity(&self) -> bool {
+        self.g[33] >= 0.5
+    }
 
     /// Express this genome as a live [`Mind`], applying the persona deltas on top
     /// of a base character (preserving its identity and diversity).
@@ -288,6 +394,10 @@ impl Genome {
         mind.set_can_die(self.can_die());
         mind.set_can_grieve(self.can_grieve());
         mind.set_can_provision(self.can_provision());
+        mind.set_can_mate(self.can_mate());
+        mind.set_can_reproduce(self.can_reproduce());
+        mind.set_can_age(self.can_age());
+        mind.set_feel_happiness(self.feel_happiness());
         mind.install_overlay(
             self.nn_enabled(),
             seed,
@@ -296,6 +406,24 @@ impl Genome {
         );
         mind.set_herd_evasion(self.herd_evasion(), self.herd_cohesion());
         mind
+    }
+
+    /// **Inheritance**: a child genome from two parents — uniform crossover (each
+    /// gene taken from one parent or the other by a coin flip) plus a small Gaussian
+    /// mutation per gene, exactly the spirit of the evolution `mutate` (reflected
+    /// into `[0,1]`). Deterministic on the supplied seeded `rng`. This is how a
+    /// village's lineage drifts: children resemble both parents, with novelty.
+    pub fn inherit(a: &Genome, b: &Genome, sigma: f32, rng: &mut Rng) -> Genome {
+        let mut g = [0.0f32; N_GENES];
+        for (i, slot) in g.iter_mut().enumerate() {
+            // uniform crossover: pick the gene from one parent or the other.
+            let picked = if rng.next_f32() < 0.5 { a.g[i] } else { b.g[i] };
+            // small inheritance mutation (smaller than search mutation — a lineage
+            // drifts, it does not scatter).
+            let step = sigma * gaussian(rng);
+            *slot = reflect01(picked + step);
+        }
+        Genome { g }
     }
 
     /// Mutate, scaling each gene's Gaussian step by a per-gene `gain` (learned
@@ -621,7 +749,7 @@ mod tests {
     fn engine_improves_and_learns() {
         let target = [
             0.9, 0.1, 0.8, 0.2, 0.7, 0.3, 0.6, 0.4, 1.0, 0.0, 1.0, 0.0, 1.0, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-            1.0, 0.5, 0.5, 1.0,
+            1.0, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         ];
         let eval = synthetic(target);
         let mut evo = Evolution::new(0xA11CE, 16, &eval);
@@ -718,5 +846,51 @@ mod tests {
         assert!(!Genome::baseline().can_provision());
         assert!(!Genome::showcase().can_provision());
         assert!(!Genome::baseline().config().can_provision);
+    }
+
+    #[test]
+    fn lifecycle_is_off_in_baseline_and_showcase() {
+        // The four life-cycle genes (29 can-mate, 30 can-reproduce, 31 can-age,
+        // 32 feel-happiness) must default OFF in BOTH presets so every existing AC,
+        // proof, and fitness run stays byte-identical: a mind with these off seeks no
+        // mate, draws no mating/aging RNG, never reproduces, and reports a flat
+        // happiness. The live game flips them on by cloning showcase, and the
+        // population only grows behind the world's `lifecycle` flag.
+        for g in [Genome::baseline(), Genome::showcase()] {
+            assert!(!g.can_mate());
+            assert!(!g.can_reproduce());
+            assert!(!g.can_age());
+            assert!(!g.feel_happiness());
+            assert!(g.g[29] < 0.5 && g.g[30] < 0.5 && g.g[31] < 0.5 && g.g[32] < 0.5);
+            // and the config decode agrees.
+            let c = g.config();
+            assert!(!c.can_mate && !c.can_reproduce && !c.can_age && !c.feel_happiness);
+        }
+    }
+
+    #[test]
+    fn village_affinity_is_off_in_baseline_and_showcase() {
+        // The society gene (33 village-affinity) must default OFF in BOTH presets so
+        // every existing AC, proof, and fitness run stays byte-identical: a mind with
+        // it off feels no settlement identity, biases no movement toward/away from any
+        // village, and draws no society RNG. The live game flips it on by cloning
+        // showcase, and all inter-village relations live behind the world's `society`
+        // flag (off the dedicated society side-RNG).
+        for g in [Genome::baseline(), Genome::showcase()] {
+            assert!(!g.village_affinity());
+            assert!(g.g[33] < 0.5);
+        }
+    }
+
+    #[test]
+    fn happiness_is_flat_until_gene_on() {
+        // With feel_happiness off the readout is a fixed neutral, so no seeded run
+        // can depend on it; flipping the gene on makes it report real well-being.
+        let off = Genome::baseline().express(&Persona::new("Test"), 0x1);
+        assert!((off.happiness() - 0.5).abs() < 1e-6);
+        let mut hg = Genome::baseline();
+        hg.g[32] = 1.0;
+        let on = hg.express(&Persona::new("Test"), 0x1);
+        assert!(on.feel_happiness());
     }
 }

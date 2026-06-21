@@ -68,6 +68,17 @@ fn drive_color(d: Drive) -> Color {
     }
 }
 
+/// Blend two 0xRRGGBB colours, `t` of the way from `a` to `b` (`t` in `[0,1]`).
+/// Used to tint a mind toward its village's banner hue while keeping its accent.
+fn blend_rgb(a: u32, b: u32, t: f32) -> u32 {
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |x: u32, y: u32| ((x as f32) * (1.0 - t) + (y as f32) * t) as u32;
+    let r = lerp((a >> 16) & 0xff, (b >> 16) & 0xff);
+    let g = lerp((a >> 8) & 0xff, (b >> 8) & 0xff);
+    let bl = lerp(a & 0xff, b & 0xff);
+    (r << 16) | (g << 8) | bl
+}
+
 const PAPER: u32 = 0xf6f4ef;
 const MUTED: u32 = 0x9a94a6;
 const INK: u32 = 0x12101a;
@@ -134,33 +145,48 @@ fn season_tint(season: f32) -> [f32; 4] {
 fn compute_sky(world: &GameWorld, cam: &Camera, aspect: f32) -> Sky {
     let (w, h) = (world.w, world.h);
     let vp = cam.view_proj(w, h, aspect);
-    let day = world.day;
+    // SHOWCASE HERO LIGHT: instead of letting the deterministic day/night cycle sit
+    // wherever it lands (often flat night), bias the *render-time* time-of-day to a
+    // flattering warm golden hour and let it drift only gently across that range, so
+    // the island always reads as lit, dimensional and cinematic. This touches only
+    // the look — `world.day` (the sim field) is never written here.
+    let day = 0.205 + 0.03 * (TAU * world.day).sin(); // ~07:00–08:00 low warm sun
     let elev = (TAU * (day - 0.25)).sin();
-    let daylight = smoothstep(-0.12, 0.18, elev);
+    // Keep a strong, confident key even at this low elevation — never washes to night.
+    let daylight = smoothstep(-0.12, 0.18, elev).max(0.78);
 
     let az = TAU * (day - 0.25) + 0.5;
-    let dir_y = elev.max(0.12);
+    // A low, raking sun gives the terrain long, shapely shading; floor it so figures
+    // and trees still catch a clear top-light rather than going pitch-dark.
+    let dir_y = elev.max(0.26);
     let horiz = (1.0 - dir_y * dir_y).max(0.04).sqrt();
     let sd = Vec3::new(az.cos() * horiz, dir_y, az.sin() * horiz).normalized();
 
-    let warm = [1.0, 0.62, 0.30];
-    let white = [1.0, 0.96, 0.86];
+    let warm = [1.0, 0.58, 0.26];
+    let white = [1.0, 0.92, 0.78];
     let moon = [0.45, 0.52, 0.74];
-    let sun_c = mix3(warm, white, (elev * 0.5 + 0.5).clamp(0.0, 1.0));
+    // Bias the key strongly toward warm gold (the golden-hour cast).
+    let sun_c = mix3(warm, white, (elev * 0.5 + 0.18).clamp(0.0, 1.0));
     let sun_color = mix3(moon, sun_c, daylight);
-    let sun_strength = 0.22 + 0.95 * daylight;
+    let sun_strength = 1.55 + 0.5 * daylight; // a strong, confident hero key
 
     let sky_day = [0.46, 0.56, 0.72];
-    let sky_dawn = [0.52, 0.34, 0.32];
+    let sky_dusk = [0.62, 0.40, 0.40];
     let sky_night = [0.07, 0.10, 0.20];
-    let lit = mix3(sky_dawn, sky_day, smoothstep(0.0, 0.5, elev));
+    // A cool sky/ambient FILL against the warm key so terrain has form (warm light /
+    // cool shadow), without ever going as dark as true night.
+    let lit = mix3(sky_dusk, sky_day, smoothstep(0.0, 0.5, elev));
     let ambient_full = mix3(sky_night, lit, daylight);
-    let ambient = [ambient_full[0] * 0.8, ambient_full[1] * 0.8, ambient_full[2] * 0.85];
+    let ambient = [
+        ambient_full[0] * 0.72 + 0.05,
+        ambient_full[1] * 0.78 + 0.06,
+        ambient_full[2] * 0.92 + 0.10,
+    ];
 
-    let hor_day = [0.60, 0.74, 0.90];
-    let hor_dawn = [0.88, 0.55, 0.40];
-    let hor_night = [0.06, 0.09, 0.18];
-    let hor_lit = mix3(hor_dawn, hor_day, smoothstep(0.0, 0.42, elev));
+    let hor_day = [0.66, 0.78, 0.92];
+    let hor_dusk = [0.96, 0.62, 0.42]; // warm gold band at the horizon
+    let hor_night = [0.10, 0.13, 0.24];
+    let hor_lit = mix3(hor_dusk, hor_day, smoothstep(0.0, 0.42, elev));
     let horizon = mix3(hor_night, hor_lit, daylight);
 
     let (season, weather, weather_kind) = climate(world);
@@ -257,47 +283,78 @@ pub fn build_with(
         );
     }
 
-    // ---- walls: thin stone slabs the minds built for shelter ----
-    // Drawn straight from `world.walls` each frame (walls are few). Each is a THIN
-    // STONE SLAB — full length along one cell axis (~0.9), thin in thickness
-    // (~0.12), ~0.55 tall — *oriented along its wall neighbours* so a row of cells
-    // reads as one continuous thin wall, not a fence of cubes. A wall with an E/W
-    // neighbour runs east-west; an N/S neighbour runs north-south; both or none
-    // falls back to east-west.
-    for wall in &world.walls {
-        let (x, z) = (wall.x as f32, wall.y as f32);
-        let gy = g(x, z);
-        // a faint per-cell wobble in tone + height so the masonry looks hand-laid.
-        let hh = geo::hash_unit(((wall.x as i64) << 20 ^ wall.y as i64) as u64, 3);
-        let tone = 0.86 + 0.12 * hh;
-        let top = 0.52 + 0.06 * hh;
-        let stone = Color([0.52 * tone, 0.50 * tone, 0.45 * tone, 1.0]);
-        // orient along neighbours: prefer east-west if a wall sits E or W.
-        let has = |dx: i32, dy: i32| world.walls.contains(&Pos::new(wall.x + dx, wall.y + dy));
-        let ew = has(1, 0) || has(-1, 0);
-        let ns = has(0, 1) || has(0, -1);
-        let east_west = ew || !ns; // both / neither → east-west default
-        let thick = 0.12;
-        let length = 0.46; // half-extent → ~0.92 cell length
-        let half = if east_west {
-            [length, top * 0.5, thick] // long along X (east-west)
-        } else {
-            [thick, top * 0.5, length] // long along Z (north-south)
-        };
-        geo::push_box(&mut s.lit, [x, gy + top * 0.5, z], half, 0.0, stone.0);
-        // a thin capstone running the same length, slightly proud, to catch light.
-        let cap = if east_west {
-            [length + 0.02, 0.05, thick + 0.02]
-        } else {
-            [thick + 0.02, 0.05, length + 0.02]
-        };
-        geo::push_box(
-            &mut s.lit,
-            [x, gy + top - 0.03, z],
-            cap,
-            0.0,
-            Color([0.40 * tone, 0.38 * tone, 0.34 * tone, 1.0]).0,
-        );
+    // ---- buildings: the minds' built `walls` footprint composed into real,
+    // multi-floor architecture (modular stone/timber pieces + glowing windows).
+    // LIVE-ONLY: reads `world.walls`/`world.tick` only — never writes the sim, so
+    // the harness `walls`/`enclosure`/`shelter_gap` semantics are byte-identical.
+    build_structures(&mut s, world, time, &g, &glow);
+
+    // ---- SOCIETY (Sprint 4): village banners + inter-village relation links ----
+    // Each VILLAGE plants a standard at its (live) territory centre, coloured by its
+    // banner hue, so settlements read as distinct places. Between centres a soft link
+    // shows the standing RELATION: a warm green-gold thread for ALLIES, a wary red
+    // ember for ENEMIES/RIVALS — subtle, never gaudy. Empty (no draw) off a society
+    // world, so a non-society render is the exact incumbent scene.
+    if world.society {
+        use crate::sim::RelationKind;
+        // relation links first (drawn low, so banners sit on top).
+        for r in &world.relations {
+            let (va, vb) = (&world.villages[r.a as usize], &world.villages[r.b as usize]);
+            if va.population == 0 || vb.population == 0 {
+                continue;
+            }
+            let kind = r.kind();
+            // only show meaningful relations — neutrals stay quiet.
+            let col = match kind {
+                RelationKind::Allied => Some((0x8fe6a8u32, 0.5)),
+                RelationKind::Friendly => Some((0xbfe6c8u32, 0.26)),
+                RelationKind::Enemy => Some((0xff6a5au32, 0.55)),
+                RelationKind::Rival => Some((0xe69a7au32, 0.30)),
+                RelationKind::Neutral => None,
+            };
+            let Some((hue, a0)) = col else { continue };
+            let (ax, az) = (va.center.x as f32, va.center.y as f32);
+            let (bx, bz) = (vb.center.x as f32, vb.center.y as f32);
+            // a dotted thread of motes along the centre-to-centre line, breathing.
+            let segs = 14u32;
+            let pulse = 0.6 + 0.4 * (time * 1.4 + r.a as f32 + r.b as f32).sin();
+            for k in 0..=segs {
+                let t = k as f32 / segs as f32;
+                let mx = ax + (bx - ax) * t;
+                let mz = az + (bz - az) * t;
+                let my = g(mx, mz) + 0.5 + 0.25 * (t * std::f32::consts::PI).sin();
+                glow(&mut s, [mx, my, mz], 0.16, Color::hex(hue, a0 * pulse));
+            }
+        }
+        // village standards: a slim pole + a glowing pennant in the banner hue.
+        for v in &world.villages {
+            if v.population == 0 {
+                continue;
+            }
+            let (x, z) = (v.center.x as f32, v.center.y as f32);
+            let gy = g(x, z);
+            // pole.
+            geo::push_box(&mut s.lit, [x, gy + 0.9, z], [0.04, 0.9, 0.04], 0.0, Color::hex(0x4a4438, 1.0).0);
+            // pennant — a small bright banner near the top, in the village hue.
+            geo::push_box(
+                &mut s.lit,
+                [x + 0.22, gy + 1.5, z],
+                [0.22, 0.16, 0.02],
+                0.0,
+                Color::hex(v.hue, 1.0).0,
+            );
+            // a soft territory-tint glow at the heart, breathing, so the centre reads.
+            let pulse = 0.6 + 0.4 * (time * 1.1 + v.id as f32 * 1.3).sin();
+            glow(&mut s, [x, gy + 0.7, z], 1.6, Color::hex(v.hue, 0.12 * pulse));
+            glow(&mut s, [x + 0.22, gy + 1.5, z], 0.4, Color::hex(v.hue, 0.7));
+            // the village name floats over its standard at village zoom.
+            if let Some((sx, sy)) = project(&vp, [x, gy + 2.0, z], sw, sh) {
+                if cam.zoom < 34.0 {
+                    let tw = v.name.chars().count() as f32 * 6.0 * ui;
+                    s.text(&v.name, sx - tw * 0.5, sy, 11.0 * ui, Color::hex(v.hue, 0.9));
+                }
+            }
+        }
     }
 
     // ---- open-world: trees (harvestable wood) + the village granary ----
@@ -321,6 +378,40 @@ pub fn build_with(
             };
             geo::push_cone(&mut s.lit, x, gy + 0.4, z, r, h, 6, canopy);
         }
+    }
+    // ---- materials economy: quarry rocks (the stone source) ----
+    // Warm stone outcrops the minds quarry for building stone; they shrink visibly as
+    // they're worked and grow back as they replenish, so the stone half of the economy
+    // reads at a glance. Empty (no draw) unless the materials economy is on.
+    for r in &world.rocks {
+        let (x, z) = (r.pos.x as f32, r.pos.y as f32);
+        let gy = g(x, z);
+        let s0 = 0.16 + 0.26 * r.stone; // size tracks how much stone is left
+        // a clustered boulder: a main rounded block + two smaller shoulders, warm grey.
+        geo::push_box(&mut s.lit, [x, gy + s0 * 0.5, z], [s0, s0 * 0.7, s0], 0.0, Color::hex(0x8d8579, 1.0).0);
+        geo::push_box(&mut s.lit, [x + s0 * 0.7, gy + s0 * 0.3, z - s0 * 0.4], [s0 * 0.5, s0 * 0.42, s0 * 0.5], 0.0, Color::hex(0x787064, 1.0).0);
+        geo::push_box(&mut s.lit, [x - s0 * 0.6, gy + s0 * 0.28, z + s0 * 0.5], [s0 * 0.45, s0 * 0.38, s0 * 0.45], 0.0, Color::hex(0x9a9286, 1.0).0);
+    }
+    // ---- materials economy: the village build-yard at the heart ----
+    // A timber + stone stockpile by the hearth showing the village's materials on hand:
+    // a stack of logs (wood) + a cairn of dressed stone, each scaled to the live stock.
+    // Inert (no draw) unless the materials economy is on.
+    if world.materials_econ {
+        let (gx, gz) = (world.granary.x as f32, world.granary.y as f32);
+        let gy = g(gx, gz);
+        // log stack — height tracks the wood stockpile (capped so it stays a tidy pile).
+        let woodf = (world.wood_stock / 40.0).clamp(0.0, 1.0);
+        let logs = 1 + (woodf * 4.0).round() as i32;
+        for i in 0..logs {
+            let ly = gy + 0.10 + i as f32 * 0.13;
+            geo::push_box(&mut s.lit, [gx - 1.4, ly, gz + 1.2], [0.5, 0.06, 0.12], 0.0, Color::hex(0x6e4a28, 1.0).0);
+            geo::push_box(&mut s.lit, [gx - 1.4, ly, gz + 1.44], [0.5, 0.06, 0.12], 0.0, Color::hex(0x7d5530, 1.0).0);
+        }
+        // dressed-stone cairn — size tracks the stone stockpile.
+        let stonef = (world.stone_stock / 28.0).clamp(0.0, 1.0);
+        let sr = 0.16 + 0.30 * stonef;
+        geo::push_box(&mut s.lit, [gx + 1.4, gy + sr * 0.5, gz + 1.3], [sr, sr * 0.6, sr], 0.0, Color::hex(0x9a9286, 1.0).0);
+        geo::push_box(&mut s.lit, [gx + 1.4, gy + sr * 1.1, gz + 1.3], [sr * 0.6, sr * 0.4, sr * 0.6], 0.0, Color::hex(0x837b6f, 1.0).0);
     }
     if world.open_world {
         // The granary / hearth: a squat wooden store distinct from the thin stone
@@ -410,6 +501,38 @@ pub fn build_with(
         glow(&mut s, [x, gy + 0.45, z], 0.7, Color::hex(0xff4a3a, 0.30));
     }
 
+    // ---- natural ecosystem: deer herd, wolf packs, bears (live-only; empty otherwise).
+    // Drawn UNDER the agents so the minds read clearly on top. Deer first (ambient
+    // background life), then the predators with a subtle threat aura.
+    for d in &world.deer {
+        if world.deer_hidden(d) {
+            continue; // a caught deer is gone until it respawns
+        }
+        let (x, z) = (d.rx, d.ry);
+        let gy = g(x, z);
+        push_deer(&mut s.lit, x, gy, z, d.heading, time, d.fleeing);
+        // a soft cool-white ground halo so the tan deer reads against the warm grass
+        // and its tan terrain tufts (a cream halo would vanish into them) — gentle
+        // enough to stay natural, brighter while it bolts.
+        let da = if d.fleeing { 0.40 } else { 0.22 };
+        glow(&mut s, [x, gy + 0.40, z], 0.85, Color::hex(0xd8ecff, da));
+    }
+    for w in &world.wolves {
+        let (x, z) = (w.rx, w.ry);
+        let gy = g(x, z);
+        push_wild_wolf(&mut s.lit, x, gy, z, w.heading, time, w.flash);
+        // a low, cool threat aura — far subtler than the stalker's red menace, but
+        // enough to pick the grey pack out of the foliage.
+        glow(&mut s, [x, gy + 0.40, z], 0.9 + 0.6 * w.flash, Color::hex(0x9fb6e0, 0.22 + 0.25 * w.flash));
+    }
+    for b in &world.bears {
+        let (x, z) = (b.rx, b.ry);
+        let gy = g(x, z);
+        push_bear(&mut s.lit, x, gy, z, b.heading, time, b.flash);
+        // a warm amber aura marks the big solitary bear — the most dangerous animal.
+        glow(&mut s, [x, gy + 0.55, z], 1.3 + 0.5 * b.flash, Color::hex(0xe09a4a, 0.26 + 0.28 * b.flash));
+    }
+
     // ---- agents: little glowing figures (the living) and graves (the dead) ----
     for (i, a) in world.agents.iter().enumerate() {
         let (x, z) = (a.rx, a.ry);
@@ -430,7 +553,26 @@ pub fn build_with(
             // faint, steady ember of remembrance.
             let fresh = (1.0 - age / 240.0).clamp(0.0, 1.0);
             let memo = 0.06 + 0.22 * fresh;
-            glow(&mut s, [x, gy + 0.5, z], 0.7 + 0.4 * fresh, Color::hex(0xbfc8e0, memo));
+            // a peaceful NATURAL death (old age) departs in a warmer golden-hour light;
+            // a violent death (predator/starvation) keeps the cool pale wisp. Both are
+            // grievable — the warmth just reads as a gentle, earned farewell.
+            let natural = a.death_cause == "old age";
+            let memo_col = if natural { 0xf4d9a8 } else { 0xbfc8e0 };
+            let wisp_col = if natural { 0xffdca0 } else { 0xd8e2f5 };
+            glow(&mut s, [x, gy + 0.5, z], 0.7 + 0.4 * fresh, Color::hex(memo_col, memo));
+            // a soul-wisp rising from a fresh grave: a few motes drifting up and
+            // fading, so a death reads as something departing the world.
+            if fresh > 0.01 {
+                for k in 0..5u32 {
+                    let ph = (age * 0.012 + k as f32 * 0.21).fract();
+                    let sway = (age * 0.05 + k as f32 * 1.7).sin() * 0.18;
+                    let rise = 0.6 + ph * 2.6;
+                    let fade = (1.0 - ph) * fresh * 0.4;
+                    // a natural passing rises a touch larger and softer — a calm exhale.
+                    let sz = if natural { 0.26 } else { 0.22 };
+                    glow(&mut s, [x + sway, gy + rise, z], sz, Color::hex(wisp_col, fade));
+                }
+            }
             // the fallen one's name lingers over the grave.
             if let Some((sx, sy)) = project(&vp, [x, gy + 0.9, z], sw, sh) {
                 if cam.zoom < 22.0 {
@@ -442,43 +584,113 @@ pub fn build_with(
         }
 
         let (dom, _) = a.mind.drives().dominant();
-        let accent = Color::hex(a.accent, 1.0);
+        // VILLAGE IDENTITY (Sprint 4 society): tint the mind's body toward its
+        // village's banner hue, so a settlement reads as a coloured group at a
+        // glance while each mind keeps a hint of its own persona accent. On a
+        // non-society world `village` is `None`, so this is the exact incumbent accent.
+        let accent = match world.village_of(i) {
+            Some(v) => Color::hex(blend_rgb(a.accent, v.hue, 0.62), 1.0),
+            None => Color::hex(a.accent, 1.0),
+        };
+        let drive = drive_color(dom);
         let mood = Color::hex(a.mind.affect().hue(), 1.0);
         let breath = 0.5 + 0.5 * (time * 1.6 + i as f32 * 1.7).sin();
+        // a faster heartbeat-style pulse for the soul-spark so each mind visibly
+        // *lives* — the orbs breathe rather than sit static.
+        let pulse = 0.5 + 0.5 * (time * 2.4 + i as f32 * 2.3).sin();
 
-        // trail — fading motes of where it has been
+        // motion trail — a comet-tail of drive-coloured motes fading behind it.
         let tn = a.trail.len();
         for (k, &(wx, wy)) in a.trail.iter().enumerate() {
             let f = (k + 1) as f32 / (tn + 1) as f32;
-            glow(&mut s, [wx, g(wx, wy) + 0.25, wy], 0.18 * f, accent.with_a(0.12 * f));
+            glow(&mut s, [wx, g(wx, wy) + 0.28, wy], 0.30 * f, drive.with_a(0.22 * f));
+            glow(&mut s, [wx, g(wx, wy) + 0.28, wy], 0.12 * f, Color::hex(0xfff4e0, 0.18 * f));
         }
 
-        // body (a luminous gumdrop) + head — a little taller than the grass so
-        // the minds always read as the focus of the scene.
-        geo::push_cone(&mut s.lit, x, gy, z, 0.34, 0.78 + 0.04 * breath, 6, accent.0);
-        geo::push_box(&mut s.lit, [x, gy + 0.96, z], [0.17, 0.17, 0.17], 0.0, Color::hex(0xf2e9da, 1.0).0);
+        // CHILDREN read as smaller figures that grow: scale the whole body/head/glow
+        // by maturity (newborn ≈ 0.18 → adult 1.0). On a non-lifecycle world every
+        // mind is maturity 1.0, so this is the exact incumbent size. `sc` maps
+        // maturity into [~0.45, 1.0] so even a newborn is visible, not a speck.
+        let sc = 0.45 + 0.55 * a.maturity;
+        // HAPPINESS warms the light: a content mind glows a touch brighter/larger, a
+        // miserable one dims — a readable felt-state without being gaudy. Reads the
+        // world's display happiness (well-being + family + safety). On a
+        // non-lifecycle world this is the flat-neutral 0.5 ⇒ `hap_b ≈ 1.0` (no-op).
+        let hap = world.happiness_of(a);
+        let hap_b = 0.78 + 0.44 * hap; // ≈ [0.78, 1.22] brightness/size factor
 
-        // mood aura (felt emotion) + a drive-coloured glow at the feet + a bright
-        // soul-spark so each mind is visible even among the trees.
-        glow(&mut s, [x, gy + 0.6, z], 1.05 + 0.10 * breath, mood.with_a(0.30));
-        glow(&mut s, [x, gy + 0.12, z], 0.7, drive_color(dom).with_a(0.20));
-        glow(&mut s, [x, gy + 0.55, z], 0.3, Color::hex(0xfff4e0, 0.5));
+        // body (a luminous gumdrop) + head — a little taller than the grass so
+        // the minds always read as the focus of the scene. Scaled by maturity.
+        geo::push_cone(&mut s.lit, x, gy, z, 0.34 * sc, (0.78 + 0.04 * breath) * sc, 6, accent.0);
+        geo::push_box(
+            &mut s.lit,
+            [x, gy + 0.96 * sc, z],
+            [0.17 * sc, 0.17 * sc, 0.17 * sc],
+            0.0,
+            Color::hex(0xf2e9da, 1.0).0,
+        );
+
+        // THE GLOW — each mind is a drive-coloured beacon. Layered additive orbs
+        // accumulate to a HOT (HDR > 1) core so it blows past the bloom threshold and
+        // halos in the post pass, fading out through a saturated drive ring to a wide
+        // soft mood aura. Bright multi-layer alphas (additive) push the centre well
+        // over 1.0 so each mind is an unmistakable point of living light. Size scales
+        // with maturity (children glow smaller) and brightness with happiness.
+        let gy_b = gy + 0.78 * sc;
+        let gh = gy + 0.7 * sc;
+        glow(&mut s, [x, gy_b, z], (2.6 + 0.6 * breath) * sc, mood.with_a(0.18 * hap_b)); // wide soft mood aura
+        glow(&mut s, [x, gh, z], (1.5 + 0.25 * pulse) * sc, drive.with_a((0.85 * hap_b).min(1.0))); // pulsing drive halo
+        glow(&mut s, [x, gh, z], 0.7 * sc, drive.with_a(1.0)); // saturated inner ring
+        glow(&mut s, [x, gh, z], 0.6 * sc, drive.with_a(0.9)); // (stacks → core goes HDR)
+        glow(&mut s, [x, gy + 0.68 * sc, z], (0.36 + 0.07 * pulse) * sc, Color::hex(0xfffaf0, 1.0)); // hot white core
+        glow(&mut s, [x, gy + 0.68 * sc, z], 0.22 * sc, Color::hex(0xffffff, 1.0)); // (stack → super-bright)
+        // a coloured pool of light cast on the ground beneath each mind, so it feels
+        // like it is genuinely emitting light onto the island.
+        glow(&mut s, [x, gy + 0.05, z], 1.3 * sc, drive.with_a(0.35));
 
         // selection: a bright pale halo
         if Some(i) == selected {
-            glow(&mut s, [x, gy + 0.55, z], 1.3 + 0.1 * breath, Color::hex(PAPER, 0.22));
+            glow(&mut s, [x, gy + 0.62, z], 1.8 + 0.2 * breath, Color::hex(PAPER, 0.35));
         }
         // invented-goal (Praxis): a gold bloom
         if a.mind.acting_on_invented() {
-            glow(&mut s, [x, gy + 0.7, z], 1.0 + 0.1 * breath, Color::hex(0xf0c24e, 0.28));
+            glow(&mut s, [x, gy + 0.75, z], 1.4 + 0.2 * breath, Color::hex(0xf0c24e, 0.45));
         }
-        // process flash: reflex red / deliberate violet
+        // process flash: a bright burst — reflex red / deliberate violet — that
+        // pops the mind for a moment when it reacts or deliberates.
         if a.flash > 0.02 {
             let fc = match a.flash_kind {
-                Process::Reflex => Color::hex(0xff3030, 0.5 * a.flash),
-                _ => Color::hex(0x9b6bff, 0.45 * a.flash),
+                Process::Reflex => Color::hex(0xff3030, 0.8 * a.flash),
+                _ => Color::hex(0x9b6bff, 0.7 * a.flash),
             };
-            glow(&mut s, [x, gy + 0.6, z], 0.9 + 0.7 * a.flash, fc);
+            glow(&mut s, [x, gy + 0.62, z], 1.3 + 1.1 * a.flash, fc);
+            glow(&mut s, [x, gy + 0.62, z], 0.5, Color::hex(0xffffff, 0.6 * a.flash));
+        }
+
+        // PAIR-BOND TETHER: a soft warm thread of motes between romantic partners —
+        // a readable "these two are together" without being gaudy. Drawn once per
+        // couple (from the lower-id partner) and only when the partner is alive. On a
+        // non-lifecycle world no mind has a partner, so this never draws.
+        if let Some(pid) = a.partner {
+            if a.id.0 < pid.0 {
+                if let Some(p) = world.agents.iter().find(|b| b.id == pid && b.alive) {
+                    let (qx, qz) = (p.rx, p.ry);
+                    let drift = (time * 0.4).fract();
+                    // a gentle warm gold (love), arcing slightly above the ground.
+                    for k in 0..8 {
+                        let f = (k as f32 + drift) / 8.0;
+                        if f >= 1.0 {
+                            continue;
+                        }
+                        let px = x + (qx - x) * f;
+                        let pz = z + (qz - z) * f;
+                        let lift = (f * std::f32::consts::PI).sin() * 0.35;
+                        // brightest in the middle of the link, soft at the ends.
+                        let a2 = (1.0 - (f - 0.5).abs() * 1.6).max(0.1) * 0.30;
+                        glow(&mut s, [px, g(px, pz) + 0.55 + lift, pz], 0.13, Color::hex(0xffc98a, a2));
+                    }
+                }
+            }
         }
 
         // intent: a soft ribbon of motes toward the committed goal
@@ -526,6 +738,37 @@ pub fn build_with(
         }
     }
 
+    // ---- mist wreathing the floating island's shoreline ----
+    // The island floats in sky and sea, so ring its coast with low, slow-drifting
+    // banks of cool haze — it sells the "floating diorama" read and softens the
+    // land/water seam into something atmospheric instead of a hard edge.
+    {
+        let (cx, cz) = (w as f32 * 0.5, h as f32 * 0.5);
+        let radius = (w.max(h) as f32) * 0.62;
+        let ring = 40;
+        for k in 0..ring {
+            let base = k as f32 / ring as f32 * TAU;
+            // jitter each bank's angle/radius/phase so the ring isn't a clean circle.
+            let jh = geo::hash_unit(k as u64, 5);
+            let jr = geo::hash_unit(k as u64, 6);
+            let ang = base + (time * 0.03 + jh * TAU);
+            let rr = radius * (0.86 + 0.14 * jr) + 1.5 * (time * 0.15 + jh * TAU).sin();
+            let mx = cx + ang.cos() * rr;
+            let mz = cz + ang.sin() * rr;
+            let drift = 0.5 + 0.5 * (time * 0.4 + jh * 6.0).sin();
+            let y = geo::SEA_Y + 0.6 + 0.5 * drift;
+            geo::push_billboard(
+                &mut s.add,
+                [mx, y, mz],
+                3.4 + 1.2 * drift,
+                1.8 + 0.6 * drift,
+                axes.0,
+                axes.1,
+                Color::hex(0xcfe0f0, 0.05 + 0.04 * drift).0,
+            );
+        }
+    }
+
     // ---- weather particles (additive motes drifting through the air) ----
     weather_motes(&mut s, cam, axes, time);
 
@@ -566,6 +809,432 @@ fn project(vp: &Mat4, p: [f32; 3], sw: f32, sh: f32) -> Option<(f32, f32)> {
     Some(((ndc[0] * 0.5 + 0.5) * sw, (1.0 - (ndc[1] * 0.5 + 0.5)) * sh))
 }
 
+/// Compose the built `walls` footprint into real, multi-floor buildings.
+///
+/// The minds build a ring of `walls` cells for shelter (emergent — the shelter
+/// drive under stalker pressure). This is a LIVE-ONLY *render* of that footprint:
+/// each contiguous (8-connected) cluster of built cells becomes one building —
+/// ground walls with a door + windows, an interior floor and a roof, and, once
+/// it is large and *established* enough, a second/third storey with a real
+/// staircase and upper windows. Height grows over a run from a deterministic
+/// live-only "establishment" metric (footprint size + sim tick), so settled
+/// shelters visibly become tall buildings — WITHOUT touching the sim fields the
+/// harness reads (`walls`, `enclosure`, `shelter_gap` are never mutated here).
+/// The kind of building a wall-cluster reads as — inferred from its footprint so the
+/// village shows real variety. Live-only (everything is a `Home` unless the materials
+/// economy is on); a purely cosmetic classification, never fed back into the sim.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BuildKind {
+    /// A dwelling: compact footprint, warm pitched roof, glowing windows.
+    Home,
+    /// A long mead-hall: elongated footprint, low long-ridged roof, a row of windows.
+    Longhouse,
+    /// A store-hall near the village heart: raised plinth, steep conical thatch roof.
+    Granary,
+    /// A lookout: slim, very tall, a crenellated flat top with a beacon glow.
+    Watchtower,
+}
+
+fn build_structures(
+    s: &mut Scene,
+    world: &GameWorld,
+    _time: f32,
+    g: &impl Fn(f32, f32) -> f32,
+    glow: &impl Fn(&mut Scene, [f32; 3], f32, Color),
+) {
+    use crate::geo::pieces::{self, Facing};
+    use std::collections::HashSet;
+
+    if world.walls.is_empty() {
+        return;
+    }
+    let cells: &HashSet<Pos> = &world.walls;
+    let inside = |p: Pos| cells.contains(&p);
+    let storey_h = 1.05f32; // one storey, world units (reads as a real floor)
+
+    // 8-connected clustering into footprints. Deterministic: cells are visited in
+    // a sorted order so the same world always yields the same buildings.
+    let mut sorted: Vec<Pos> = cells.iter().copied().collect();
+    sorted.sort_by_key(|p| (p.y, p.x));
+    let mut seen: HashSet<Pos> = HashSet::new();
+
+    for &start in &sorted {
+        if seen.contains(&start) {
+            continue;
+        }
+        // flood-fill this cluster (deterministic stack order via sorted neighbours).
+        let mut stack = vec![start];
+        let mut comp: Vec<Pos> = Vec::new();
+        seen.insert(start);
+        while let Some(p) = stack.pop() {
+            comp.push(p);
+            let mut nbrs = Vec::new();
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    if dx == 0 && dy == 0 {
+                        continue;
+                    }
+                    let n = Pos::new(p.x + dx, p.y + dy);
+                    if cells.contains(&n) && !seen.contains(&n) {
+                        nbrs.push(n);
+                    }
+                }
+            }
+            nbrs.sort_by_key(|q| (q.y, q.x));
+            for n in nbrs {
+                if seen.insert(n) {
+                    stack.push(n);
+                }
+            }
+        }
+
+        // footprint bbox + a stable per-cluster hash (lowest cell) for jitter.
+        let (mut x0, mut x1, mut z0, mut z1) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+        for p in &comp {
+            x0 = x0.min(p.x);
+            x1 = x1.max(p.x);
+            z0 = z0.min(p.y);
+            z1 = z1.max(p.y);
+        }
+        // Clamp the rendered envelope to a human scale: the minds build large, sparse
+        // rings, but an 8×8 building reads as a roofless courtyard. Cap each axis and
+        // centre the building on the footprint, so a big sparse cluster becomes a
+        // solid, well-proportioned house that grows UP (storeys) rather than sprawling.
+        // With the MATERIALS ECONOMY on, a well-supplied village raises BIGGER footprints
+        // (a larger cap) — real, large buildings, not just huts. Live-only render choice.
+        let max_axis: i32 = if world.materials_econ { 7 } else { 5 };
+        if x1 - x0 + 1 > max_axis {
+            let cm = (x0 + x1) / 2;
+            x0 = cm - max_axis / 2;
+            x1 = x0 + max_axis - 1;
+        }
+        if z1 - z0 + 1 > max_axis {
+            let cm = (z0 + z1) / 2;
+            z0 = cm - max_axis / 2;
+            z1 = z0 + max_axis - 1;
+        }
+        let anchor = comp.iter().min_by_key(|p| (p.y, p.x)).copied().unwrap();
+        let chash = ((anchor.x as i64) << 20 ^ anchor.y as i64) as u64;
+        let jit = |k: u32| geo::hash_unit(chash, k);
+        // The building's VISUAL size is its bounding-box envelope (the perimeter we
+        // wall), so scale height by the bbox footprint, not the raw cell count (a few
+        // cells flung to opposite corners still make a big house).
+        let bw = (x1 - x0 + 1) as f32;
+        let bd = (z1 - z0 + 1) as f32;
+        let span = bw.max(bd);
+        let area = bw * bd;
+        let cells = comp.len() as f32; // raw blocks the minds laid in this cluster
+
+        // BUILDING TYPE (live-only, deterministic) — give the village real variety so it
+        // reads as a settlement of distinct buildings, not one repeated hut. Inferred
+        // from the footprint's shape + a stable per-cluster hash, so the same world always
+        // yields the same mix. Only diversified when the materials economy is on (the
+        // showcase); otherwise everything is a Home, exactly as before.
+        let elong = span / span.min(bw).min(bd).max(1.0); // long axis / short axis
+        let centre = Pos::new((x0 + x1) / 2, (z0 + z1) / 2);
+        let near_heart = centre.manhattan(world.granary) <= 18;
+        // The minds build mostly square shelter-rings, so reading type purely from the
+        // emergent footprint yields almost all "homes". To make the settlement read as a
+        // real mix, the TYPE is chosen from a stable per-cluster hash (so the same world
+        // always gives the same building in the same place), nudged by footprint cues:
+        //   • a genuinely long footprint is always a longhouse;
+        //   • a big footprint near the village heart tends toward a granary store-hall;
+        //   • a small compact footprint can spike into a watchtower;
+        //   • everything else is a home (the commonest, as a village should be).
+        let roll = jit(91); // stable 0..1 per cluster
+        // a granary store-hall wants a decent footprint; it favours the village heart but
+        // need not sit on it (a store-hall can stand anywhere among the homes).
+        let granary_ok = area >= 9.0 && (roll < if near_heart { 0.55 } else { 0.22 });
+        let btype = if !world.materials_econ {
+            BuildKind::Home
+        } else if elong >= 2.0 && span >= 4.0 {
+            BuildKind::Longhouse
+        } else if granary_ok {
+            BuildKind::Granary
+        } else if area <= 12.0 && cells >= 3.0 && roll > 0.78 {
+            BuildKind::Watchtower
+        } else if area >= 16.0 && roll > 0.62 {
+            // a big settled compound reads as a longhouse hall too.
+            BuildKind::Longhouse
+        } else {
+            BuildKind::Home
+        };
+
+        // ESTABLISHMENT (live-only, deterministic): how settled this structure is,
+        // 0..1. Bigger footprints establish; time on the island raises it further so
+        // a long-standing shelter keeps growing upward even after its ring is closed
+        // (when the minds stop building because shelter_gap == None). Derived purely
+        // from render-time data; never fed back into the sim.
+        let size_est = smoothstep(4.0, 22.0, area);
+        // Ramp establishment over the first ~900 ticks (~2 min at the live speed) so a
+        // watcher sees the village visibly rise into multi-floor buildings within a
+        // couple of minutes, rather than waiting many minutes for the top storeys.
+        let age_est = smoothstep(150.0, 900.0, world.tick as f32);
+        let establish = ((0.5 + 0.5 * age_est) * size_est.max(0.2)).clamp(0.0, 1.0);
+        // stories scale with the building's footprint AND establishment: small huts
+        // stay 1 storey; larger, settled compounds rise to 2-3 floors. The MATERIALS
+        // ECONOMY lets a well-supplied village raise TALLER buildings, and each type has
+        // its own profile: watchtowers spike tall, longhouses stay low + long, granaries
+        // and homes climb a few floors. Live-only render choice; the sim is unaffected.
+        let max_stories = if world.materials_econ {
+            match btype {
+                BuildKind::Watchtower => 5,
+                BuildKind::Longhouse => 2,
+                BuildKind::Granary => 3,
+                BuildKind::Home => {
+                    if area >= 20.0 {
+                        4
+                    } else if area >= 9.0 {
+                        3
+                    } else {
+                        2
+                    }
+                }
+            }
+        } else if area >= 16.0 {
+            3
+        } else if area >= 6.0 {
+            2
+        } else {
+            1
+        };
+        // a watchtower establishes fast (it's a slim spike, built up not out), so it
+        // reaches near-full height sooner; others ramp with footprint + age as before.
+        let est_t = if matches!(btype, BuildKind::Watchtower) {
+            establish.max(age_est)
+        } else {
+            establish
+        };
+        let stories = (1 + (est_t * (max_stories - 1) as f32).round() as usize)
+            .min(max_stories)
+            .max(1);
+
+        // ground footing reference height: the lowest ground under the footprint, so
+        // the whole building sits on one level pad (no floating on a slope).
+        let mut base_y = f32::MAX;
+        for p in &comp {
+            base_y = base_y.min(g(p.x as f32, p.y as f32));
+        }
+        if base_y == f32::MAX {
+            base_y = 0.0;
+        }
+
+        // pick a single doorway cell + a set of window cells deterministically. The
+        // door is on the most-south outward face of the lowest cell; windows on a
+        // sampling of the other outward faces.
+        let door_cell = comp
+            .iter()
+            .filter(|p| !inside(Pos::new(p.x, p.y + 1)))
+            .max_by_key(|p| (p.y, p.x))
+            .copied()
+            .unwrap_or(anchor);
+
+        // a foundation pad slab under the whole footprint so the interior reads as a
+        // floor, not bare grass, and the walls have a plinth to stand on.
+        pieces::floor_slab(
+            &mut s.lit,
+            x0 as f32 - 0.5,
+            z0 as f32 - 0.5,
+            x1 as f32 + 0.5,
+            z1 as f32 + 0.5,
+            base_y + 0.02,
+            0.10,
+            pieces::STONE_DARK,
+        );
+
+        // Walls, storey by storey. The minds build sparse/partial rings, so rather
+        // than render each loose cell (which reads as scattered rubble), we treat the
+        // footprint's bounding box as the building ENVELOPE and lay a CONTINUOUS
+        // perimeter wall around it, cell by cell along each of the four sides. This
+        // turns a rough emergent footprint into a clean, solid, multi-floor building
+        // while still being driven entirely by what the minds built (cluster + size).
+        //
+        // Each perimeter slot gets a deterministic role: the door slot (one, ground
+        // floor, on the south face nearest the mind-built door cell), windows
+        // (sampled), or solid wall. Interior faces never exist here (it's the outer
+        // envelope), so there is no doubled geometry / z-fighting.
+        let mut window_lights: Vec<[f32; 3]> = Vec::new();
+        // build the ordered list of perimeter (cell, facing) slots once.
+        let mut slots: Vec<(i32, i32, Facing)> = Vec::new();
+        for x in x0..=x1 {
+            slots.push((x, z0, Facing::North));
+        }
+        for z in z0..=z1 {
+            slots.push((x1, z, Facing::East));
+        }
+        for x in (x0..=x1).rev() {
+            slots.push((x, z1, Facing::South));
+        }
+        for z in (z0..=z1).rev() {
+            slots.push((x0, z, Facing::West));
+        }
+        // choose the door slot: the south-facing slot whose cell is closest to the
+        // mind-built door cell (so the entrance sits where the minds actually opened).
+        let door_idx = slots
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, z, f))| *f == Facing::South && *z == z1)
+            .min_by_key(|(_, (x, _, _))| (x - door_cell.x).abs())
+            .map(|(i, _)| i);
+
+        // upper storeys step IN slightly so the silhouette tapers and each floor is
+        // visibly its own course (a stacked tower reads as stacked, not one tall box).
+        let inset = 0.14f32;
+        let cxm = (x0 + x1) as f32 * 0.5;
+        let czm = (z0 + z1) as f32 * 0.5;
+        for st in 0..stories {
+            let y0 = base_y + 0.05 + st as f32 * storey_h;
+            let ins = st as f32 * inset;
+            // shrink the floor footprint for this storey's terrace below it.
+            let (fx0, fz0, fx1, fz1) = (
+                x0 as f32 - 0.5 + ins,
+                z0 as f32 - 0.5 + ins,
+                x1 as f32 + 0.5 - ins,
+                z1 as f32 + 0.5 - ins,
+            );
+            for (si, (cx, cz, face)) in slots.iter().enumerate() {
+                // pull each slot toward the building centre by the storey inset.
+                let cxf = *cx as f32 + (cxm - *cx as f32).signum() * ins.min((*cx as f32 - cxm).abs());
+                let czf = *cz as f32 + (czm - *cz as f32).signum() * ins.min((*cz as f32 - czm).abs());
+                let seed = jit(si as u32 * 7 + st as u32 * 131);
+                if st == 0 && Some(si) == door_idx {
+                    pieces::wall_door(&mut s.lit, cxf, y0, czf, *face, storey_h, seed);
+                    continue;
+                }
+                // windows: deterministic sampling. Denser on upper floors (each storey
+                // wants light); the ground floor is more solid (it's the base).
+                let wt = jit(si as u32 * 13 + st as u32 * 101 + 17);
+                let want_window = wt > if st == 0 { 0.55 } else { 0.40 };
+                if want_window {
+                    let c = pieces::wall_window(&mut s.lit, cxf, y0, czf, *face, storey_h, seed);
+                    window_lights.push(c);
+                } else {
+                    pieces::wall_segment(&mut s.lit, cxf, y0, czf, *face, storey_h, seed);
+                }
+            }
+
+            // an interior floor slab for this storey (a touch inside the envelope so
+            // it tucks behind the walls — the floor you'd stand on / the ceiling
+            // below). A thin timber ledge marks where an upper storey steps in.
+            if x1 > x0 && z1 > z0 {
+                let fy = if st == 0 { base_y + 0.06 } else { y0 - 0.02 };
+                pieces::floor_slab(&mut s.lit, fx0 + 0.18, fz0 + 0.18, fx1 - 0.18, fz1 - 0.18, fy, 0.06, pieces::FLOOR);
+                // a slim string-course ledge at the base of each upper storey (the
+                // step-in), so floors are legibly separate without opening a courtyard.
+                if st >= 1 {
+                    let (lx0, lz0, lx1, lz1) = (
+                        x0 as f32 - 0.5 + (st - 1) as f32 * inset,
+                        z0 as f32 - 0.5 + (st - 1) as f32 * inset,
+                        x1 as f32 + 0.5 - (st - 1) as f32 * inset,
+                        z1 as f32 + 0.5 - (st - 1) as f32 * inset,
+                    );
+                    pieces::floor_slab(&mut s.lit, lx0, lz0, lx1, lz1, y0 - 0.03, 0.05, pieces::TIMBER);
+                }
+            }
+        }
+
+        // an EXTERNAL stone stair climbing the south face to the first upper floor —
+        // a real, visible staircase (interior flights would be hidden by the roof).
+        // It hugs the wall and lands at a small terrace by an upper door, so a
+        // multi-storey building plainly shows how you get up. Placed deterministically.
+        if stories >= 2 {
+            // run it up against the south wall, offset along X by a stable jitter.
+            let sx = x0 as f32 + 0.6 + (x1 - x0).max(0) as f32 * (0.2 + 0.5 * jit(3));
+            let sz = z1 as f32 + 0.78; // just outside the south wall
+            // climb one storey of real stepped treads, facing the wall (+Z run handled
+            // inside the piece). Then a small landing slab at the top.
+            pieces::staircase(&mut s.lit, sx, base_y + 0.06, sz, storey_h, 6);
+            pieces::floor_slab(
+                &mut s.lit,
+                sx - 0.24,
+                z1 as f32 + 0.28,
+                sx + 0.24,
+                z1 as f32 + 0.62,
+                base_y + 0.05 + storey_h,
+                0.07,
+                pieces::STONE,
+            );
+            // a slim handrail post at the foot, for a touch of structure.
+            pieces::pillar(&mut s.lit, sx + 0.22, base_y + 0.06, sz, storey_h * 0.5);
+        }
+
+        // ROOF on the top storey — sized to the (inset) top storey footprint so it
+        // caps the building neatly. The roof is the strongest read of building TYPE, so
+        // each kind gets its own silhouette: watchtowers a crenellated battlement crown
+        // with a beacon; granaries a tall conical thatch; longhouses a long low pitch;
+        // homes a warm pitched roof (or a flat terrace once big + tall).
+        let top_y = base_y + 0.05 + stories as f32 * storey_h;
+        let tins = (stories - 1) as f32 * inset;
+        let rx0 = x0 as f32 - 0.5 + tins;
+        let rz0 = z0 as f32 - 0.5 + tins;
+        let rx1 = x1 as f32 + 0.5 - tins;
+        let rz1 = z1 as f32 + 0.5 - tins;
+        // beacon glow position (set by the watchtower crown), lit below with the windows.
+        let mut beacon: Option<[f32; 3]> = None;
+        match btype {
+            BuildKind::Watchtower => {
+                let deck = pieces::battlement(&mut s.lit, rx0, rz0, rx1, rz1, top_y);
+                beacon = Some([deck[0], deck[1] + 0.18, deck[2]]);
+            }
+            BuildKind::Granary => {
+                // a tall straw cone centred on the top footprint — the store-hall read.
+                let rcx = (rx0 + rx1) * 0.5;
+                let rcz = (rz0 + rz1) * 0.5;
+                let radius = ((rx1 - rx0).max(rz1 - rz0)) * 0.5 + 0.16;
+                let peak = 0.6 + 0.22 * span.clamp(2.0, 6.0) / 6.0;
+                pieces::thatch_cone(&mut s.lit, rcx, rcz, radius, top_y, peak);
+            }
+            BuildKind::Longhouse => {
+                // a long, low pitch running the hall's length (walls dominate, not roof).
+                let peak = 0.42 + 0.10 * jit(8);
+                pieces::pitched_roof(&mut s.lit, rx0, rz0, rx1, rz1, top_y, peak);
+            }
+            BuildKind::Home => {
+                if area >= 20.0 && stories >= 3 {
+                    pieces::flat_roof(&mut s.lit, rx0, rz0, rx1, rz1, top_y);
+                    // corner pillars + a small cap so the terrace reads as a crown.
+                    for (px, pz) in [(rx0 + 0.2, rz0 + 0.2), (rx1 - 0.2, rz1 - 0.2), (rx0 + 0.2, rz1 - 0.2), (rx1 - 0.2, rz0 + 0.2)] {
+                        pieces::pillar(&mut s.lit, px, top_y + 0.1, pz, 0.4);
+                    }
+                } else {
+                    // a modest pitch (walls should dominate, not the roof) that grows a
+                    // touch with span so wide buildings still read as roofed.
+                    let peak = 0.38 + 0.16 * jit(8) + 0.14 * (span - 3.0).clamp(0.0, 4.0) / 4.0;
+                    pieces::pitched_roof(&mut s.lit, rx0, rz0, rx1, rz1, top_y, peak);
+                }
+            }
+        }
+
+        // corner posts the full height, so tall towers have visible structure and a
+        // crisp vertical silhouette (and they hide any wall-seam at the corners).
+        let h_total = stories as f32 * storey_h;
+        for (px, pz) in [
+            (x0 as f32 - 0.46, z0 as f32 - 0.46),
+            (x1 as f32 + 0.46, z0 as f32 - 0.46),
+            (x0 as f32 - 0.46, z1 as f32 + 0.46),
+            (x1 as f32 + 0.46, z1 as f32 + 0.46),
+        ] {
+            pieces::pillar(&mut s.lit, px, base_y + 0.05, pz, h_total);
+        }
+
+        // WARM GLOWING WINDOWS: an additive bloom at each window pane so they read
+        // as lit from within — lovely at the golden hour, and the building's life.
+        // Brighter as the sun lowers (the warmth carries the dusk).
+        let warmth = (1.0 - s.sky.daylight) * 0.6 + 0.4;
+        for c in &window_lights {
+            glow(s, *c, 0.22, Color::hex(0xffb24e, 0.28 * warmth));
+            glow(s, *c, 0.10, Color::hex(0xfff0d0, 0.40 * warmth));
+        }
+        // a watchtower's BEACON: a small fire-pot on the crown, glowing warm — the
+        // lookout reads as lit + watching at the golden hour and into the dusk.
+        if let Some(b) = beacon {
+            pieces::pillar(&mut s.lit, b[0], b[1] - 0.18, b[2], 0.16);
+            glow(s, b, 0.30, Color::hex(0xff8a2a, 0.55 * warmth + 0.18));
+            glow(s, b, 0.14, Color::hex(0xffe2a0, 0.6 * warmth + 0.2));
+        }
+    }
+}
+
 /// A wolf: a grey low-slung quadruped — body, head, tail, four stub legs.
 fn push_wolf(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, time: f32) {
     let lope = (time * 9.0).sin() * 0.06;
@@ -581,6 +1250,128 @@ fn push_wolf(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, time: f32) {
     // two hot eyes
     geo::push_box(out, [x - 0.05, gy + 0.54, z + 0.58], [0.02, 0.02, 0.02], 0.0, Color::hex(0xff5a3a, 1.0).0);
     geo::push_box(out, [x + 0.05, gy + 0.54, z + 0.58], [0.02, 0.02, 0.02], 0.0, Color::hex(0xff5a3a, 1.0).0);
+}
+
+/// Place a body part for a heading-oriented animal: `fwd` is along the animal's
+/// nose (+), `side` is to its left(+)/right(−), `up` is height. Rotates the local
+/// (fwd, side) offset by `heading` into world (x, z) and pushes a box there. Lets the
+/// natural wildlife meshes turn to face the way they move.
+#[allow(clippy::too_many_arguments)]
+fn push_part(
+    out: &mut Vec<LitVertex>,
+    x: f32,
+    gy: f32,
+    z: f32,
+    heading: f32,
+    sc: f32,
+    fwd: f32,
+    side: f32,
+    up: f32,
+    half: [f32; 3],
+    color: [f32; 4],
+) {
+    let (sh, ch) = heading.sin_cos();
+    // a uniform `sc` scale enlarges the whole animal (offsets, height, and box size)
+    // so it reads clearly at the village zoom against the busy terrain.
+    let (fwd, side, up) = (fwd * sc, side * sc, up * sc);
+    let half = [half[0] * sc, half[1] * sc, half[2] * sc];
+    // heading 0 ⇒ nose toward +x. fwd along heading, side 90° left of it.
+    let wx = x + fwd * ch - side * sh;
+    let wz = z + fwd * sh + side * ch;
+    geo::push_box(out, [wx, gy + up, wz], half, heading, color);
+}
+
+/// A natural wolf: a lean grey pack hunter, oriented by `heading`, with a four-beat
+/// loping gait. Distinct from the dark red-eyed stalker `push_wolf`: cooler grey fur,
+/// no menace eyes, just a wild animal. `flash` brightens it on a strike.
+fn push_wild_wolf(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, time: f32, flash: f32) {
+    let lope = (time * 9.0 + x).sin() * 0.05;
+    let warm = flash * 0.5;
+    let fur = Color::hex(0xa7adba, 1.0).0; // cool light grey — reads against the grass
+    let fur = [fur[0] + warm, fur[1] + warm * 0.5, fur[2] + warm * 0.4, 1.0];
+    let dark = Color::hex(0x686672, 1.0).0; // darker grey
+    let snout = Color::hex(0x3f3d45, 1.0).0;
+    let sc = 1.5; // enlarged so the pack reads clearly at the village zoom
+    // body (long axis along fwd)
+    push_part(out, x, gy, z, heading, sc, 0.0, 0.0, 0.40 + lope, [0.34, 0.15, 0.17], fur);
+    // shoulders a touch taller
+    push_part(out, x, gy, z, heading, sc, 0.14, 0.0, 0.46 + lope, [0.16, 0.15, 0.16], fur);
+    // head + snout out front
+    push_part(out, x, gy, z, heading, sc, 0.34, 0.0, 0.48, [0.13, 0.13, 0.13], dark);
+    push_part(out, x, gy, z, heading, sc, 0.50, 0.0, 0.44, [0.09, 0.07, 0.08], snout);
+    // ears
+    push_part(out, x, gy, z, heading, sc, 0.30, 0.07, 0.60, [0.03, 0.05, 0.03], dark);
+    push_part(out, x, gy, z, heading, sc, 0.30, -0.07, 0.60, [0.03, 0.05, 0.03], dark);
+    // bushy tail trailing
+    push_part(out, x, gy, z, heading, sc, -0.42, 0.0, 0.46, [0.16, 0.05, 0.05], fur);
+    // four legs with a diagonal trot offset
+    let g4 = (time * 9.0 + x).sin() * 0.04;
+    for (fz, sx, ph) in [(0.22f32, 0.13f32, 0.0f32), (0.22, -0.13, 1.0), (-0.24, 0.13, 1.0), (-0.24, -0.13, 0.0)] {
+        let step = g4 * if ph > 0.5 { 1.0 } else { -1.0 };
+        push_part(out, x, gy, z, heading, sc, fz, sx, 0.16 + step.max(0.0), [0.05, 0.16, 0.05], dark);
+    }
+}
+
+/// A bear: big, brown, powerful, solitary — a bulky body, broad head, stumpy legs,
+/// rounded ears. Oriented by `heading`, slow ambling sway. `flash` warms it on a maul.
+fn push_bear(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, time: f32, flash: f32) {
+    let sway = (time * 4.0 + z).sin() * 0.04;
+    let warm = flash * 0.5;
+    let coat = Color::hex(0x5a3a22, 1.0).0; // warm brown
+    let coat = [coat[0] + warm, coat[1] + warm * 0.4, coat[2] + warm * 0.2, 1.0];
+    let dark = Color::hex(0x3e2716, 1.0).0;
+    let muzzle = Color::hex(0x6b4a30, 1.0).0;
+    let sc = 1.8; // a bear is big — clearly the largest animal on the island
+    // a big bulky body
+    push_part(out, x, gy, z, heading, sc, 0.0, 0.0, 0.50 + sway, [0.40, 0.28, 0.26], coat);
+    // a hump at the shoulders (grizzly silhouette)
+    push_part(out, x, gy, z, heading, sc, 0.16, 0.0, 0.66, [0.18, 0.16, 0.20], coat);
+    // broad head out front, low
+    push_part(out, x, gy, z, heading, sc, 0.42, 0.0, 0.50, [0.18, 0.16, 0.18], dark);
+    push_part(out, x, gy, z, heading, sc, 0.58, 0.0, 0.44, [0.10, 0.09, 0.11], muzzle);
+    // round ears
+    push_part(out, x, gy, z, heading, sc, 0.38, 0.13, 0.70, [0.05, 0.05, 0.05], dark);
+    push_part(out, x, gy, z, heading, sc, 0.38, -0.13, 0.70, [0.05, 0.05, 0.05], dark);
+    // four heavy legs
+    for (fz, sx) in [(0.26f32, 0.20f32), (0.26, -0.20), (-0.26, 0.20), (-0.26, -0.20)] {
+        push_part(out, x, gy, z, heading, sc, fz, sx, 0.18, [0.09, 0.20, 0.09], dark);
+    }
+}
+
+/// A deer: tan, slender, antlered — a graceful body on long thin legs, a raised neck
+/// and a small head with a branching antler rack, and a flick of white tail. Oriented
+/// by `heading`. When `fleeing`, it poses alert/bounding (head higher, longer stride).
+fn push_deer(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, time: f32, fleeing: bool) {
+    let speed = if fleeing { 13.0 } else { 5.0 };
+    let bound = (time * speed + x).sin() * if fleeing { 0.10 } else { 0.03 };
+    let tan = Color::hex(0xcf9a5e, 1.0).0; // warm tan — a shade brighter than the grass
+    let pale = Color::hex(0xeed3a6, 1.0).0;
+    let dark = Color::hex(0x4a3320, 1.0).0;
+    let antler = Color::hex(0xb89a6e, 1.0).0;
+    let neck_up = if fleeing { 0.78 } else { 0.70 };
+    let sc = 1.45; // graceful but legible at the village zoom
+    // slim body
+    push_part(out, x, gy, z, heading, sc, 0.0, 0.0, 0.50 + bound.max(0.0), [0.26, 0.12, 0.14], tan);
+    // raised neck (forward + up)
+    push_part(out, x, gy, z, heading, sc, 0.24, 0.0, neck_up, [0.06, 0.12, 0.06], tan);
+    // small head + muzzle
+    push_part(out, x, gy, z, heading, sc, 0.30, 0.0, neck_up + 0.16, [0.07, 0.07, 0.08], pale);
+    push_part(out, x, gy, z, heading, sc, 0.40, 0.0, neck_up + 0.14, [0.04, 0.04, 0.05], dark);
+    // ears
+    push_part(out, x, gy, z, heading, sc, 0.26, 0.08, neck_up + 0.24, [0.02, 0.05, 0.02], tan);
+    push_part(out, x, gy, z, heading, sc, 0.26, -0.08, neck_up + 0.24, [0.02, 0.05, 0.02], tan);
+    // a small branching antler rack (a couple of tines each side)
+    push_part(out, x, gy, z, heading, sc, 0.28, 0.06, neck_up + 0.30, [0.015, 0.10, 0.015], antler);
+    push_part(out, x, gy, z, heading, sc, 0.28, -0.06, neck_up + 0.30, [0.015, 0.10, 0.015], antler);
+    push_part(out, x, gy, z, heading, sc, 0.34, 0.10, neck_up + 0.36, [0.05, 0.015, 0.015], antler);
+    push_part(out, x, gy, z, heading, sc, 0.34, -0.10, neck_up + 0.36, [0.05, 0.015, 0.015], antler);
+    // white scut tail
+    push_part(out, x, gy, z, heading, sc, -0.26, 0.0, 0.52, [0.04, 0.05, 0.04], pale);
+    // four long thin legs, a bounding stride when fleeing
+    let stride = bound * if fleeing { 1.0 } else { 0.5 };
+    for (fz, sx, ph) in [(0.18f32, 0.10f32, 1.0f32), (0.18, -0.10, -1.0), (-0.20, 0.10, -1.0), (-0.20, -0.10, 1.0)] {
+        push_part(out, x, gy, z, heading, sc, fz + stride * ph * 0.4, sx, 0.18, [0.035, 0.22, 0.035], dark);
+    }
 }
 
 /// Falling rain or snow as additive motes in a slab around the camera centre —
@@ -631,7 +1422,7 @@ fn top_bar(s: &mut Scene, world: &GameWorld, hud: &Hud, sw: f32) {
         s.text("trained policy", sw - 130.0, 21.0, 12.0, Color::hex(0x5fd6a0, 0.9));
     }
     s.text(
-        "click an agent · drag to pan · scroll to zoom · space pauses · [ / ] speed · F feed · Q quantum",
+        "click an agent · WASD / drag to pan · Q E rotate · scroll zooms to cursor · space pauses · [ / ] speed · F feed · G quantum",
         50.0,
         37.0,
         10.5,
@@ -730,15 +1521,19 @@ fn inspector(s: &mut Scene, world: &GameWorld, selected: Option<usize>, sw: f32,
     s.rrect(px, py, pw, ph, 14.0, Color::hex(INK, 0.8));
 
     let Some(i) = selected else {
-        s.text("THE VILLAGE", px + 18.0, py + 18.0, 12.0, Color::hex(CORAL, 1.0));
-        s.text_wrapped(
-            "Six minds share one field, each running the real Daimon cognitive cycle — and the trained policy that reaches the end goal. Click any one to open its mind.",
-            px + 18.0,
-            py + 38.0,
-            12.5,
-            pw - 36.0,
-            Color::hex(PAPER, 0.85),
-        );
+        let (title, intro) = if world.society {
+            (
+                "THE SOCIETY",
+                "A living island of minds gathered into VILLAGES — kin who settle together. Over time they intermarry into ALLIANCES and contest borders into RIVALRIES, all running the real Daimon cognitive cycle. Click any mind to open it.",
+            )
+        } else {
+            (
+                "THE VILLAGE",
+                "Minds share one field, each running the real Daimon cognitive cycle — and the trained policy that reaches the end goal. Click any one to open its mind.",
+            )
+        };
+        s.text(title, px + 18.0, py + 18.0, 12.0, Color::hex(CORAL, 1.0));
+        s.text_wrapped(intro, px + 18.0, py + 38.0, 12.5, pw - 36.0, Color::hex(PAPER, 0.85));
         let mut yy = py + 112.0;
         let living = world.living_count();
         let total = world.agents.len();
@@ -809,6 +1604,118 @@ fn inspector(s: &mut Scene, world: &GameWorld, selected: Option<usize>, sw: f32,
         Color::hex(mood.hue(), 0.95),
     );
     y += 24.0;
+
+    // LIFE — the life-cycle facts (only meaningful on a lifecycle world): how happy,
+    // how old, who its partner is, and how many children. A child shows its growth.
+    if world.lifecycle {
+        let hap = world.happiness_of(a);
+        let hap_word = if hap > 0.66 {
+            "content"
+        } else if hap > 0.4 {
+            "getting by"
+        } else if hap > 0.18 {
+            "weary"
+        } else {
+            "suffering"
+        };
+        s.text("LIFE", lx, y, 11.0, Color::hex(CORAL, 1.0));
+        y += 15.0;
+        // happiness bar — a warm gold the fuller the happier.
+        s.text("happiness", lx, y - 1.0, 10.5, Color::hex(MUTED, 1.0));
+        bar(s, lx + 70.0, y + 1.0, cw - 130.0, hap, Color::hex(0xffc24e, 1.0));
+        s.text(hap_word, lx + cw - 56.0, y - 1.0, 10.5, Color::hex(0xffc24e, 0.95));
+        y += 16.0;
+        // age + life-stage. Age shown in "years" (1 year = 600 ticks) for readability.
+        let age_ticks = world.age_of(a);
+        let years = age_ticks as f32 / 600.0;
+        let stage = if a.maturity < 0.92 {
+            format!("child · {}% grown", (a.maturity * 100.0) as u32)
+        } else {
+            let frac = age_ticks as f32 / a.lifespan.max(1) as f32;
+            if frac > 0.8 {
+                "elder".to_string()
+            } else {
+                "adult".to_string()
+            }
+        };
+        s.text(format!("age {years:.1} · {stage}"), lx, y, 11.0, Color::hex(PAPER, 0.9));
+        y += 16.0;
+        // partner.
+        let partner_name = a
+            .partner
+            .and_then(|pid| world.agents.iter().find(|b| b.id == pid && b.alive))
+            .map(|p| p.name.clone());
+        match partner_name {
+            Some(name) => {
+                s.orb(lx + 5.0, y + 5.0, 4.0, 0.8, Color::hex(0xffc98a, 1.0));
+                s.text(format!("partnered with {name}"), lx + 14.0, y, 11.0, Color::hex(0xffc98a, 0.95));
+            }
+            None => {
+                s.text("unpartnered", lx, y, 11.0, Color::hex(MUTED, 0.85));
+            }
+        }
+        y += 16.0;
+        // children (living count of the recorded children), and parents if a child.
+        let kids = a.children.iter().filter(|&&c| world.agents.iter().any(|b| b.id == c && b.alive)).count();
+        if kids > 0 {
+            s.text(format!("{kids} child{}", if kids == 1 { "" } else { "ren" }), lx, y, 11.0, Color::hex(PAPER, 0.9));
+            y += 16.0;
+        }
+        if !a.parents.is_empty() {
+            let pn: Vec<String> = a
+                .parents
+                .iter()
+                .filter_map(|pid| world.agents.iter().find(|b| b.id == *pid).map(|b| b.name.clone()))
+                .collect();
+            if !pn.is_empty() {
+                s.text(format!("born to {}", pn.join(" & ")), lx, y, 10.5, Color::hex(MUTED, 0.85));
+                y += 16.0;
+            }
+        }
+        y += 8.0;
+    }
+
+    // VILLAGE — the society facts (only meaningful on a society world): which
+    // settlement this mind belongs to, and that village's standing alliances and
+    // enmities. Empty (no draw) off a society world, so the panel is the incumbent.
+    if world.society {
+        if let Some(v) = world.village_of(i) {
+            use crate::sim::RelationKind;
+            s.text("VILLAGE", lx, y, 11.0, Color::hex(CORAL, 1.0));
+            y += 15.0;
+            s.orb(lx + 5.0, y + 5.0, 5.0, 0.9, Color::hex(v.hue, 1.0));
+            s.text(format!("of {} · pop {}", v.name, v.population), lx + 16.0, y, 11.5, Color::hex(v.hue, 0.95));
+            y += 17.0;
+            // gather this village's allies and enemies from the relation matrix.
+            let mut allies: Vec<&str> = Vec::new();
+            let mut enemies: Vec<&str> = Vec::new();
+            for other in &world.villages {
+                if other.id == v.id || other.population == 0 {
+                    continue;
+                }
+                if let Some(r) = world.relation_between(v.id, other.id) {
+                    match r.kind() {
+                        RelationKind::Allied | RelationKind::Friendly => allies.push(&other.name),
+                        RelationKind::Enemy | RelationKind::Rival => enemies.push(&other.name),
+                        RelationKind::Neutral => {}
+                    }
+                }
+            }
+            if !allies.is_empty() {
+                s.text(format!("allied with {}", allies.join(", ")), lx, y, 10.5, Color::hex(0x8fe6a8, 0.95));
+                y += 15.0;
+            }
+            if !enemies.is_empty() {
+                s.text(format!("at odds with {}", enemies.join(", ")), lx, y, 10.5, Color::hex(0xff7a6a, 0.95));
+                y += 15.0;
+            }
+            if allies.is_empty() && enemies.is_empty() {
+                s.text("keeps to itself", lx, y, 10.5, Color::hex(MUTED, 0.85));
+                y += 15.0;
+            }
+            y += 8.0;
+        }
+    }
 
     if let Some(pr) = a.mind.project() {
         let pct = (pr.fraction() * 100.0) as u32;
