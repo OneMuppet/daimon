@@ -417,6 +417,72 @@ pub fn push_weapon(
     }
 }
 
+/// Draw a TRADE accessory on a villager so its PROFESSION reads at a glance: a tool
+/// in hand + a hat. `trade` is a small code — 0 hunter (spear + pointed leather cap),
+/// 1 farmer (hoe + wide straw hat), 2 builder (shouldered plank + flat cap),
+/// 3 elder/chief (tall staff + gold circlet). Warriors carry weapons via
+/// [`push_weapon`] instead, and children are left as bare little figures, so the
+/// renderer calls this only for grown civilians. Built in the figure's LOCAL frame
+/// (mirrors `push_weapon`'s right-hand grip + `push_villager`'s head height), so it
+/// rides the gait. Pure function of the inputs; render-only — no sim dependency.
+#[allow(clippy::too_many_arguments)]
+pub fn push_trade(
+    out: &mut Vec<LitVertex>,
+    x: f32,
+    gy: f32,
+    z: f32,
+    heading: f32,
+    sc: f32,
+    phase: f32,
+    stride: f32,
+    trade: u8,
+) {
+    let st = stride.clamp(0.0, 1.0);
+    let (sw, _cw) = phase.sin_cos();
+    // adult proportions (callers gate on maturity), mirroring push_villager/weapon.
+    let hip = 0.30;
+    let torso_h = 0.30;
+    let head_r = 0.135;
+    let head_cy = hip + torso_h * 2.0 + head_r + 0.04;
+    let arm_swing = -sw * 0.45 * st;
+    let hand_side = -0.165;
+    let grip_fwd = 0.16 + arm_swing * 0.10;
+    let grip_up = hip + torso_h * 2.0 - 0.16; // ≈ hand height
+    // tints
+    let wood = [0.40, 0.26, 0.15, 1.0];
+    let straw = [0.84, 0.69, 0.34, 1.0];
+    let steel = [0.74, 0.78, 0.84, 1.0];
+    let leather = [0.34, 0.24, 0.16, 1.0];
+    let gold = [0.86, 0.70, 0.30, 1.0];
+    match trade {
+        // HUNTER — a tall spear held upright + a pointed leather cap.
+        0 => {
+            push_fixed(out, x, gy, z, heading, sc, grip_fwd, hand_side, grip_up + 0.30, [0.016, 0.34, 0.016], wood); // shaft
+            push_fixed(out, x, gy, z, heading, sc, grip_fwd, hand_side, grip_up + 0.66, [0.026, 0.05, 0.026], steel); // spearhead
+            push_fixed(out, x, gy, z, heading, sc, 0.0, 0.0, head_cy + head_r * 0.55, [head_r * 0.95, head_r * 0.30, head_r * 0.95], leather); // cap band
+            push_fixed(out, x, gy, z, heading, sc, 0.0, 0.0, head_cy + head_r * 1.05, [head_r * 0.42, head_r * 0.30, head_r * 0.42], leather); // point
+        }
+        // FARMER — a hoe + a wide-brim straw hat.
+        1 => {
+            push_fixed(out, x, gy, z, heading, sc, grip_fwd, hand_side, grip_up + 0.22, [0.015, 0.28, 0.015], wood); // shaft
+            push_fixed(out, x, gy, z, heading, sc, grip_fwd + 0.05, hand_side, grip_up + 0.48, [0.05, 0.022, 0.03], steel); // hoe head
+            push_fixed(out, x, gy, z, heading, sc, 0.0, 0.0, head_cy + head_r * 0.55, [head_r * 1.9, head_r * 0.10, head_r * 1.9], straw); // wide brim
+            push_fixed(out, x, gy, z, heading, sc, 0.0, 0.0, head_cy + head_r * 0.9, [head_r * 0.7, head_r * 0.40, head_r * 0.7], straw); // crown
+        }
+        // BUILDER — a plank shouldered across the back + a flat cap.
+        2 => {
+            push_fixed(out, x, gy, z, heading, sc, 0.0, 0.02, hip + torso_h * 2.0 + 0.09, [0.05, 0.025, 0.34], wood); // plank across shoulders
+            push_fixed(out, x, gy, z, heading, sc, 0.0, 0.0, head_cy + head_r * 0.7, [head_r * 1.15, head_r * 0.12, head_r * 1.15], leather); // flat cap
+        }
+        // ELDER / CHIEF — a tall staff + a gold circlet.
+        _ => {
+            push_fixed(out, x, gy, z, heading, sc, grip_fwd, hand_side, grip_up + 0.32, [0.018, 0.40, 0.018], wood); // staff
+            push_fixed(out, x, gy, z, heading, sc, grip_fwd, hand_side, grip_up + 0.74, [0.04, 0.04, 0.04], gold); // staff knob
+            push_fixed(out, x, gy, z, heading, sc, 0.0, 0.0, head_cy + head_r * 0.8, [head_r * 1.05, head_r * 0.12, head_r * 1.05], gold); // circlet
+        }
+    }
+}
+
 /// The local-frame right-hand grip world position for a warrior (so the renderer can
 /// anchor a muzzle flash / clash spark there). Mirrors `push_weapon`'s grip math.
 pub fn weapon_muzzle(x: f32, gy: f32, z: f32, heading: f32, sc: f32, ranged: bool) -> [f32; 3] {

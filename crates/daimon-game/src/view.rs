@@ -1017,6 +1017,33 @@ pub fn build_full(
             }
         }
 
+        // ROLE / TRADE (live-only render aid): give each grown civilian a profession
+        // the eye can read — a tool in hand + a hat. Warriors already carry weapons
+        // (above) and CHILDREN stay bare small figures (the maturity scale `sc`
+        // already shrinks them), so this draws only for adults who aren't mustered.
+        // The village LEADER reads as an elder/chief (staff + circlet); everyone else
+        // gets a stable per-mind trade (hunter / farmer / builder) keyed off their
+        // slot so a villager keeps the same job frame to frame. Honest scope: warrior
+        // and chief are real sim state; the hunter/farmer/builder split is a cosmetic
+        // layer over civilians (the sim has forager/builder behaviours, not guilds).
+        // Pure read of render state — no sim is touched.
+        let is_warrior = world.war && a.warband.is_some();
+        if !is_warrior && a.maturity >= 0.85 {
+            let is_leader = world.village_of(i).and_then(|v| v.leader) == Some(a.id);
+            let trade: u8 = if is_leader {
+                3
+            } else {
+                // SplitMix-style bit-mix on the slot so the three civilian trades
+                // spread evenly (a plain multiply-shift clustered onto one trade).
+                let mut hsh = (i as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
+                hsh = (hsh ^ (hsh >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                hsh = (hsh ^ (hsh >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                hsh ^= hsh >> 31;
+                (hsh % 3) as u8
+            };
+            geo::push_trade(&mut s.lit, x, gy + idle_bob * sc, z, heading, sc, phase, stride, trade);
+        }
+
         // THE GLOW — each mind still glows, but now it is a CHARACTER that glows
         // rather than a featureless orb: the aura BACKLIGHTS the little figure and a
         // bright soul-spark floats just above its head (the unmistakable point of
