@@ -145,6 +145,70 @@ fn drive_color(d: Drive) -> Color {
     }
 }
 
+/// A villager's READABLE role — what its body + accessories portray, and what the
+/// dialog describes. Derived purely from a READ of sim/render state (no sim touched):
+/// warrior + chief are real sim state; child is the maturity scale; the civilian
+/// hunter/farmer/builder split is a stable cosmetic hash of the slot. Used by BOTH
+/// the renderer (which accessory to draw) and the dialog (how the mind describes
+/// itself) so the two never disagree.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Child,
+    Warrior,
+    Chief,
+    Hunter,
+    Farmer,
+    Builder,
+}
+
+impl Role {
+    /// A short human label for the dialog ("a hunter", "the chief"…).
+    pub fn label(self) -> &'static str {
+        match self {
+            Role::Child => "still a child",
+            Role::Warrior => "a warrior",
+            Role::Chief => "the chief",
+            Role::Hunter => "a hunter",
+            Role::Farmer => "a farmer",
+            Role::Builder => "a builder",
+        }
+    }
+    /// The trade code [`geo::push_trade`] uses, if this role carries a trade tool.
+    /// Warriors carry weapons (drawn separately) and children carry nothing.
+    pub fn trade_code(self) -> Option<u8> {
+        match self {
+            Role::Hunter => Some(0),
+            Role::Farmer => Some(1),
+            Role::Builder => Some(2),
+            Role::Chief => Some(3),
+            Role::Child | Role::Warrior => None,
+        }
+    }
+}
+
+/// Read the role of agent `i`. Pure read — never mutates the sim.
+pub fn role_of(world: &GameWorld, i: usize, a: &crate::sim::Agent) -> Role {
+    if a.maturity < 0.85 {
+        return Role::Child;
+    }
+    if world.war && a.warband.is_some() {
+        return Role::Warrior;
+    }
+    if world.village_of(i).and_then(|v| v.leader) == Some(a.id) {
+        return Role::Chief;
+    }
+    // stable SplitMix hash of the slot → an even hunter/farmer/builder split.
+    let mut h = (i as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
+    h = (h ^ (h >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    h ^= h >> 31;
+    match h % 3 {
+        0 => Role::Hunter,
+        1 => Role::Farmer,
+        _ => Role::Builder,
+    }
+}
+
 /// Blend two 0xRRGGBB colours, `t` of the way from `a` to `b` (`t` in `[0,1]`).
 /// Used to tint a mind toward its village's banner hue while keeping its accent.
 fn blend_rgb(a: u32, b: u32, t: f32) -> u32 {
@@ -427,7 +491,7 @@ pub fn build_with(
     time: f32,
     ui: f32,
 ) -> Scene {
-    build_full(world, cam, selected, hud, evo, None, sw, sh, time, ui)
+    build_full(world, cam, selected, hud, evo, None, None, sw, sh, time, ui)
 }
 
 /// Full render entry, including the optional WALKABLE INTERIOR. When `interior` is
@@ -442,6 +506,7 @@ pub fn build_full(
     hud: &Hud,
     evo: Option<&EvoHud>,
     interior: Option<&crate::interior::Interior>,
+    dialog: Option<&Dialog>,
     sw: f32,
     sh: f32,
     time: f32,
@@ -1027,20 +1092,7 @@ pub fn build_full(
         // and chief are real sim state; the hunter/farmer/builder split is a cosmetic
         // layer over civilians (the sim has forager/builder behaviours, not guilds).
         // Pure read of render state — no sim is touched.
-        let is_warrior = world.war && a.warband.is_some();
-        if !is_warrior && a.maturity >= 0.85 {
-            let is_leader = world.village_of(i).and_then(|v| v.leader) == Some(a.id);
-            let trade: u8 = if is_leader {
-                3
-            } else {
-                // SplitMix-style bit-mix on the slot so the three civilian trades
-                // spread evenly (a plain multiply-shift clustered onto one trade).
-                let mut hsh = (i as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
-                hsh = (hsh ^ (hsh >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-                hsh = (hsh ^ (hsh >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-                hsh ^= hsh >> 31;
-                (hsh % 3) as u8
-            };
+        if let Some(trade) = role_of(world, i, a).trade_code() {
             geo::push_trade(&mut s.lit, x, gy + idle_bob * sc, z, heading, sc, phase, stride, trade);
         }
 
@@ -1207,7 +1259,13 @@ pub fn build_full(
         evo_panel(&mut chrome, world, evo, sw / ui, sh / ui);
     } else {
         top_bar(&mut chrome, world, hud, cam.is_fp(), sw / ui);
-        inspector(&mut chrome, world, selected, sw / ui, sh / ui);
+        // DIALOG takes over the panel area when a conversation is open; otherwise the
+        // usual inspector. (The dialog reads sim state only — never writes it.)
+        if let Some(dlg) = dialog {
+            dialog_panel(&mut chrome, world, dlg, sw / ui, sh / ui);
+        } else {
+            inspector(&mut chrome, world, selected, sw / ui, sh / ui);
+        }
     }
     for mut q in chrome.quads {
         q.rect = [q.rect[0] * ui, q.rect[1] * ui, q.rect[2] * ui, q.rect[3] * ui];
@@ -2859,4 +2917,208 @@ fn strip_tag(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+// ---- NPC DIALOG (live-only presentation) -----------------------------------
+//
+// Talking to a villager opens a premade Q&A. The questions are fixed; each ANSWER
+// is composed from a READ of that mind's current state — its name + role, its mood
+// and the drive it's chasing, its family, its village and that village's standing
+// with its neighbours. Nothing here writes a sim field, so it cannot perturb
+// cognition. Keyboard-driven (number keys ask, T/Esc leaves) so it works the same
+// in first-person (pointer locked) as in the god-view.
+
+/// One open conversation: which agent we're talking to + which question is answered.
+pub struct Dialog {
+    pub target: usize,
+    pub topic: Option<usize>,
+}
+
+/// The fixed question menu — the index is the number key that asks it.
+pub const DIALOG_QUESTIONS: [&str; 6] = [
+    "Who are you?",
+    "How are you feeling?",
+    "What are you up to?",
+    "Tell me about your family.",
+    "Tell me about your village.",
+    "Who are your neighbours?",
+];
+
+fn name_of_id(world: &GameWorld, id: daimon_core::EntityId) -> Option<String> {
+    world
+        .agents
+        .iter()
+        .find(|a| a.id == id)
+        .map(|a| a.name.clone())
+}
+
+/// Compose the answer to question `topic` from a READ of mind `i`. Pure.
+fn dialog_answer(world: &GameWorld, i: usize, topic: usize) -> String {
+    let a = &world.agents[i];
+    let role = role_of(world, i, a);
+    let village = world.village_of(i);
+    match topic {
+        // who are you
+        0 => match village.map(|v| v.name.as_str()) {
+            Some(v) => format!("I'm {}, {} of {}.", a.name, role.label(), v),
+            None => format!("I'm {}, {}.", a.name, role.label()),
+        },
+        // how are you feeling
+        1 => {
+            let mood = a.mind.affect().emotion();
+            let hap = world.happiness_of(a);
+            let tail = if hap > 0.66 {
+                " Life is good lately."
+            } else if hap < 0.34 {
+                " These are hard days."
+            } else {
+                ""
+            };
+            format!("Feeling {mood}.{tail}")
+        }
+        // what are you up to — the mind's OWN latest narration line, else its drive
+        2 => {
+            let inner = strip_tag(a.inner.trim());
+            if inner.is_empty() {
+                let (dom, _) = a.mind.drives().dominant();
+                format!("Mostly seeing to my {}.", dom.name())
+            } else {
+                let mut c = inner.chars();
+                match c.next() {
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    None => inner,
+                }
+            }
+        }
+        // family
+        3 => {
+            let partner = a.partner.and_then(|p| name_of_id(world, p));
+            let kids = a.children.len();
+            match (partner, kids) {
+                (Some(p), 0) => format!("I'm partnered with {p}."),
+                (Some(p), 1) => format!("I'm partnered with {p}, and we have a child."),
+                (Some(p), n) => format!("I'm partnered with {p}, and we have {n} children."),
+                (None, 0) => "No family of my own yet.".to_string(),
+                (None, 1) => "I'm raising a child on my own.".to_string(),
+                (None, n) => format!("I'm raising {n} children on my own."),
+            }
+        }
+        // village
+        4 => match village {
+            Some(v) => {
+                let era = if world.eras {
+                    format!(" We're in the {}.", v.era.name())
+                } else {
+                    String::new()
+                };
+                let lead = if !v.leader_name.is_empty() {
+                    format!(" {} leads us.", v.leader_name)
+                } else {
+                    String::new()
+                };
+                format!("{} — {} of us now.{era}{lead}", v.name, v.population)
+            }
+            None => "I live free on this island.".to_string(),
+        },
+        // neighbours / diplomacy
+        _ => match village {
+            Some(v) => {
+                use crate::sim::RelationKind;
+                let (mut allies, mut foes) = (Vec::new(), Vec::new());
+                for r in &world.relations {
+                    let other = if r.a == v.id {
+                        Some(r.b)
+                    } else if r.b == v.id {
+                        Some(r.a)
+                    } else {
+                        None
+                    };
+                    if let Some(o) = other {
+                        if world.villages[o as usize].population == 0 {
+                            continue;
+                        }
+                        let on = world.villages[o as usize].name.clone();
+                        match r.kind() {
+                            RelationKind::Allied | RelationKind::Friendly => allies.push(on),
+                            RelationKind::Enemy | RelationKind::Rival => foes.push(on),
+                            RelationKind::Neutral => {}
+                        }
+                    }
+                }
+                let at_war = world.war && world.wars.iter().any(|w| w.a == v.id || w.b == v.id);
+                let mut parts = Vec::new();
+                if !allies.is_empty() {
+                    parts.push(format!("allied with {}", allies.join(", ")));
+                }
+                if !foes.is_empty() {
+                    parts.push(format!("wary of {}", foes.join(", ")));
+                }
+                let base = if parts.is_empty() {
+                    "We keep to ourselves.".to_string()
+                } else {
+                    format!("We're {}.", parts.join("; "))
+                };
+                if at_war {
+                    format!("{base} And we are at WAR.")
+                } else {
+                    base
+                }
+            }
+            None => "I keep to myself out here.".to_string(),
+        },
+    }
+}
+
+/// Draw the dialog overlay: the speaker's name + portrait orb, the current answer
+/// (or a greeting before any question), then the numbered question menu. Laid out
+/// in design pixels (scaled with the rest of the HUD chrome by the caller).
+fn dialog_panel(s: &mut Scene, world: &GameWorld, dlg: &Dialog, sw: f32, sh: f32) {
+    let i = dlg.target;
+    let Some(a) = world.agents.get(i) else { return };
+    let pw = (sw * 0.62).clamp(420.0, 760.0);
+    let px = (sw - pw) * 0.5;
+    let ph = 236.0;
+    let py = sh - ph - 26.0;
+    s.rrect(px, py, pw, ph, 16.0, Color::hex(INK, 0.9));
+    // speaker
+    s.orb(px + 28.0, py + 26.0, 7.0, 0.85, Color::hex(a.accent, 1.0));
+    let role = role_of(world, i, a);
+    let vline = world
+        .village_of(i)
+        .map(|v| format!("  ·  {}", v.name))
+        .unwrap_or_default();
+    s.text(
+        format!("{}  ({}){}", a.name, role.label(), vline),
+        px + 44.0,
+        py + 18.0,
+        14.0,
+        Color::hex(CORAL, 1.0),
+    );
+    // the answer, or a greeting if nothing's been asked yet.
+    let body = match dlg.topic {
+        Some(t) => dialog_answer(world, i, t),
+        None => match &a.say {
+            Some((txt, _)) if !txt.trim().is_empty() => format!("“{}”", strip_tag(txt.trim())),
+            _ => "“Aye? Ask me something.”".to_string(),
+        },
+    };
+    s.text_wrapped(body, px + 26.0, py + 48.0, 13.5, pw - 52.0, Color::hex(PAPER, 0.92));
+    // question menu — the highlighted row is the one currently answered.
+    let mut qy = py + 120.0;
+    for (n, q) in DIALOG_QUESTIONS.iter().enumerate() {
+        let col = if dlg.topic == Some(n) {
+            Color::hex(0xffd86a, 1.0)
+        } else {
+            Color::hex(PAPER, 0.78)
+        };
+        s.text(format!("[{}]  {}", n + 1, q), px + 28.0, qy, 12.5, col);
+        qy += 18.0;
+    }
+    s.text(
+        "press 1–6 to ask  ·  T or Esc to leave",
+        px + 28.0,
+        py + ph - 20.0,
+        10.5,
+        Color::hex(MUTED, 0.8),
+    );
 }

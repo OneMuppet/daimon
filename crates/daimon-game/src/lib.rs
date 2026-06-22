@@ -75,6 +75,12 @@ struct Game {
     /// never read by the sim.
     house_cache: Vec<interior::HouseRef>,
     house_cache_walls: usize,
+    /// NPC DIALOG (live-only): when `Some`, a conversation is open — the renderer
+    /// shows the dialog card (premade Q&A read from the mind) instead of the
+    /// inspector. Opened with T (talk to the nearest mind ahead in first-person, or
+    /// the selected mind in the god-view), closed with T / Esc. Read-only; the sim
+    /// is never touched, so cognition stays byte-identical.
+    dialog: Option<view::Dialog>,
 }
 
 impl Game {
@@ -274,6 +280,7 @@ impl Game {
             interior: None,
             house_cache: Vec::new(),
             house_cache_walls: usize::MAX,
+            dialog: None,
         }
     }
 
@@ -304,6 +311,7 @@ impl Game {
             interior: None,
             house_cache: Vec::new(),
             house_cache_walls: usize::MAX,
+            dialog: None,
         }
     }
 
@@ -423,6 +431,51 @@ impl Game {
         });
     }
 
+    /// The mind to TALK to right now: in first-person, the nearest living mind
+    /// roughly ahead of the eye (within reach + a forward cone); in the god-view, the
+    /// currently-selected mind. `None` if nobody's in range. Pure read of state.
+    fn talk_target(&self) -> Option<usize> {
+        if let Some(fp) = self.cam.fp {
+            let (fwd, _right) = crate::math::fp_basis(fp.yaw, 0.0);
+            let mut best: Option<(f32, usize)> = None;
+            for (i, a) in self.world.agents.iter().enumerate() {
+                if !a.alive {
+                    continue;
+                }
+                let (dx, dz) = (a.rx - fp.eye_x, a.ry - fp.eye_z);
+                let d = (dx * dx + dz * dz).sqrt();
+                if d > 8.0 || d < 1e-3 {
+                    continue;
+                }
+                let dot = (dx * fwd.x + dz * fwd.z) / d; // cosine to the look direction
+                if dot < 0.2 {
+                    continue; // must be roughly in front of the player
+                }
+                // prefer the closest, most-centred mind.
+                let score = d - dot * 2.5;
+                if best.map(|(bs, _)| score < bs).unwrap_or(true) {
+                    best = Some((score, i));
+                }
+            }
+            best.map(|(_, i)| i)
+        } else {
+            // god-view: talk to whoever is selected, if they're alive.
+            self.selected.filter(|&i| self.world.agents.get(i).map(|a| a.alive).unwrap_or(false))
+        }
+    }
+
+    /// Toggle the dialog: open a conversation with the talk-target (if any), or close
+    /// the one that's open. Render/input only — the sim is never touched.
+    fn toggle_dialog(&mut self) {
+        if self.dialog.is_some() {
+            self.dialog = None;
+            return;
+        }
+        if let Some(target) = self.talk_target() {
+            self.dialog = Some(view::Dialog { target, topic: None });
+        }
+    }
+
     /// Per-frame first-person WALK: WASD moves the eye along the look's GROUND
     /// plane (forward/back + strafe), Shift sprints. Diagonals are normalised so
     /// they aren't faster, and the eye-height tracks the terrain via `ground_height`
@@ -488,6 +541,19 @@ impl Game {
             self.walk_held(dt);
         } else {
             self.pan_held(dt);
+        }
+        // DIALOG auto-close: end the conversation if the mind has died, or (in
+        // first-person) if the player has walked well out of talking range.
+        if let Some(dlg) = &self.dialog {
+            let gone = self.world.agents.get(dlg.target).map(|a| !a.alive).unwrap_or(true);
+            let walked_off = self.cam.fp.is_some_and(|fp| {
+                self.world.agents.get(dlg.target).map_or(true, |a| {
+                    (a.rx - fp.eye_x).hypot(a.ry - fp.eye_z) > 11.0
+                })
+            });
+            if gone || walked_off {
+                self.dialog = None;
+            }
         }
         if let Some(ev) = self.evolve.as_mut() {
             ev.world.animate(dt);
@@ -607,6 +673,15 @@ impl App {
                     game.cam.zoom = debug_query_f32("zoom").unwrap_or(5.0);
                 }
             }
+        }
+        // SELF-VERIFY HOOK for NPC DIALOG: `?talk=N` opens a conversation with mind N
+        // and `?ask=T` pre-selects question T (0..5), so a headless shot can show the
+        // dialog card + a composed answer (the live T-key is the real entry point).
+        // Live-only; never touched by the harness.
+        if let Some(n) = debug_query_f32("talk") {
+            let idx = (n as usize).min(game.world.agents.len().saturating_sub(1));
+            let topic = debug_query_f32("ask").map(|t| (t as usize).min(view::DIALOG_QUESTIONS.len() - 1));
+            game.dialog = Some(view::Dialog { target: idx, topic });
         }
         // DEBUG: suppress mind glow so a headless shot can inspect the bare villager
         // character mesh (`?noglow=1` / DAIMON_NOGLOW). Render aid only; no sim effect.
@@ -798,12 +873,28 @@ impl ApplicationHandler<AppEvent> for App {
                             self.game.enter_nearest_house();
                         }
                     }
+                    // T = TALK: open a conversation with the nearest mind ahead (first
+                    // person) or the selected mind (god-view); press again to leave.
+                    Key::Character("t") | Key::Character("T") if pressed => {
+                        self.game.toggle_dialog();
+                    }
+                    // While a dialog is open, the number keys 1–6 ASK that question.
+                    Key::Character(d @ ("1" | "2" | "3" | "4" | "5" | "6")) if pressed && self.game.dialog.is_some() => {
+                        let n = d.as_bytes()[0].wrapping_sub(b'1') as usize;
+                        if n < view::DIALOG_QUESTIONS.len() {
+                            if let Some(dlg) = self.game.dialog.as_mut() {
+                                dlg.topic = Some(n);
+                            }
+                        }
+                    }
                     // one-shot toggles (on key-down only)
                     Key::Named(NamedKey::Space) if pressed => self.game.hud.paused = !self.game.hud.paused,
-                    // Esc: leave first-person if in it (back to the god-view); else
-                    // clear the selection as before.
+                    // Esc: close an open dialog first; else leave first-person if in it
+                    // (back to the god-view); else clear the selection as before.
                     Key::Named(NamedKey::Escape) if pressed => {
-                        if self.game.cam.is_fp() {
+                        if self.game.dialog.is_some() {
+                            self.game.dialog = None;
+                        } else if self.game.cam.is_fp() {
                             self.game.exit_fp();
                             release_pointer_lock();
                         } else {
@@ -895,6 +986,7 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.game.hud,
                     evo.as_ref(),
                     self.game.interior.as_ref(),
+                    self.game.dialog.as_ref(),
                     sw,
                     sh,
                     t,
