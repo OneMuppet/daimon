@@ -483,6 +483,34 @@ pub fn push_trade(
     }
 }
 
+/// Build a little VEHICLE at world `(x, gy, z)` facing `heading`, scaled by `sc`.
+/// `hover` picks the look: a wheeled motorcar (Industrial) or a sleek wheel-less
+/// hover-pod (Space). `body` is the paint colour. Built in the LOCAL frame
+/// (fwd/side/up) like the other figures so it sits along the road direction; the
+/// headlight/taillight/underglow are additive billboards added by the caller.
+/// Pure function of the inputs; render-only — no sim dependency.
+#[allow(clippy::too_many_arguments)]
+pub fn push_car(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, sc: f32, hover: bool, body: [f32; 4]) {
+    let dark = mul(body, 0.58);
+    let wheel = [0.12, 0.12, 0.13, 1.0];
+    let glass = [0.46, 0.56, 0.68, 1.0];
+    // chassis — a low body, long along the travel direction (fwd = half[0]).
+    push_fixed(out, x, gy, z, heading, sc, 0.0, 0.0, 0.20, [0.46, 0.12, 0.24], body);
+    // cabin — a smaller block set a touch back; glassy on a car, body-coloured on a pod.
+    push_fixed(out, x, gy, z, heading, sc, -0.05, 0.0, 0.37, [0.26, 0.11, 0.20], if hover { mul(body, 1.1) } else { glass });
+    if hover {
+        // a hover-pod: no wheels, a thin emissive skirt that the underglow lights.
+        push_fixed(out, x, gy, z, heading, sc, 0.0, 0.0, 0.07, [0.42, 0.04, 0.22], [0.40, 0.72, 1.0, 1.0]);
+    } else {
+        // four dark wheels at the corners.
+        for (fw, sd) in [(0.30, 0.22), (0.30, -0.22), (-0.30, 0.22), (-0.30, -0.22)] {
+            push_fixed(out, x, gy, z, heading, sc, fw, sd, 0.10, [0.10, 0.10, 0.07], wheel);
+        }
+        // a dark bumper line so the car reads as facing forward.
+        push_fixed(out, x, gy, z, heading, sc, 0.42, 0.0, 0.16, [0.06, 0.06, 0.22], dark);
+    }
+}
+
 /// The local-frame right-hand grip world position for a warrior (so the renderer can
 /// anchor a muzzle flash / clash spark there). Mirrors `push_weapon`'s grip math.
 pub fn weapon_muzzle(x: f32, gy: f32, z: f32, heading: f32, sc: f32, ranged: bool) -> [f32; 3] {

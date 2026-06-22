@@ -669,6 +669,139 @@ pub fn build_full(
                 glow(&mut s, [mx, my, mz], 0.16, Color::hex(hue, a0 * pulse));
             }
         }
+        // ROADS + TRAFFIC (live-only render): join each peopled village to its nearest
+        // neighbour with a path that hugs the terrain — a dirt track in the early eras,
+        // a paved road once a settlement reaches the Industrial age, with VEHICLES
+        // driving back and forth on it. Pure function of the village centres + the
+        // clock; no sim state is read or written, so cognition stays byte-identical.
+        {
+            // a MINIMUM SPANNING TREE over the peopled villages (Prim's) → one
+            // connected road network linking every settlement with the least total
+            // road, rather than disjoint nearest-neighbour stubs.
+            let peopled: Vec<usize> = world
+                .villages
+                .iter()
+                .filter(|v| v.population > 0)
+                .map(|v| v.id as usize)
+                .collect();
+            let center = |i: usize| {
+                let v = &world.villages[i];
+                (v.center.x as f32, v.center.y as f32)
+            };
+            let mut edges: Vec<(usize, usize)> = Vec::new();
+            if peopled.len() >= 2 {
+                let mut in_tree = vec![peopled[0]];
+                let mut rest: Vec<usize> = peopled[1..].to_vec();
+                while !rest.is_empty() {
+                    // closest (tree node, outside node) pair joins the tree next.
+                    let mut best: Option<(f32, usize, usize)> = None; // (dist, tree_node, rest_idx)
+                    for &ti in &in_tree {
+                        let (tx, tz) = center(ti);
+                        for (ri, &rn) in rest.iter().enumerate() {
+                            let (rx, rz) = center(rn);
+                            let d = (rx - tx).hypot(rz - tz);
+                            if best.map(|(bd, _, _)| d < bd).unwrap_or(true) {
+                                best = Some((d, ti, ri));
+                            }
+                        }
+                    }
+                    let Some((_, ti, ri)) = best else { break };
+                    let rn = rest.remove(ri);
+                    edges.push((ti.min(rn), ti.max(rn)));
+                    in_tree.push(rn);
+                }
+            }
+            for (i, j) in edges {
+                let (va, vb) = (&world.villages[i], &world.villages[j]);
+                let (ax, az) = (va.center.x as f32, va.center.y as f32);
+                let (bx, bz) = (vb.center.x as f32, vb.center.y as f32);
+                let era = if world.eras {
+                    (va.era as usize).max(vb.era as usize)
+                } else {
+                    0
+                };
+                let paved = era >= 3; // Industrial(3)/Space(4) lay a real road
+                // a light asphalt grey (paved) / pale dirt (track) — picked to read
+                // against the green-and-ochre terrain rather than vanish into shadow.
+                let road_c = if paved {
+                    [0.55, 0.55, 0.59, 1.0]
+                } else {
+                    [0.55, 0.42, 0.27, 1.0]
+                };
+                // a crisp centre-line strip (lit, not additive) so the road reads as a
+                // road at any zoom: bright lane-markings on tarmac, a worn pale rut on dirt.
+                let line_c = if paved {
+                    [0.92, 0.86, 0.55, 1.0]
+                } else {
+                    [0.66, 0.54, 0.38, 1.0]
+                };
+                let lw = if paved { 0.10 } else { 0.14 };
+                let (dx, dz) = (bx - ax, bz - az);
+                let len = (dx * dx + dz * dz).sqrt();
+                if len < 1e-3 {
+                    continue;
+                }
+                let (ux, uz) = (dx / len, dz / len); // along the road
+                let (nx, nz) = (-uz, ux); // perpendicular (for the road width)
+                let hw = 0.85; // road half-width
+                // short sub-segments so the flat strip follows the bumpy ground. Lifted
+                // ABOVE the territory wash (which sits at +0.12) so the road reads as a
+                // road rather than getting tinted/occluded by the faction ground-glow.
+                let lift = 0.16;
+                let steps = (len / 1.2).ceil().max(1.0) as usize;
+                let c = |x: f32, z: f32| [x, g(x, z) + lift, z];
+                for k in 0..steps {
+                    let t0 = k as f32 / steps as f32;
+                    let t1 = (k + 1) as f32 / steps as f32;
+                    let (p0x, p0z) = (ax + dx * t0, az + dz * t0);
+                    let (p1x, p1z) = (ax + dx * t1, az + dz * t1);
+                    let a0 = c(p0x + nx * hw, p0z + nz * hw);
+                    let b0 = c(p0x - nx * hw, p0z - nz * hw);
+                    let a1 = c(p1x + nx * hw, p1z + nz * hw);
+                    let b1 = c(p1x - nx * hw, p1z - nz * hw);
+                    geo::push_tri(&mut s.lit, a0, b0, b1, road_c);
+                    geo::push_tri(&mut s.lit, a0, b1, a1, road_c);
+                    // a centre-line strip, lifted a hair above the surface so it reads.
+                    let cc = |x: f32, z: f32| [x, g(x, z) + lift + 0.02, z];
+                    let l0 = cc(p0x + nx * lw, p0z + nz * lw);
+                    let r0 = cc(p0x - nx * lw, p0z - nz * lw);
+                    let l1 = cc(p1x + nx * lw, p1z + nz * lw);
+                    let r1 = cc(p1x - nx * lw, p1z - nz * lw);
+                    geo::push_tri(&mut s.lit, l0, r0, r1, line_c);
+                    geo::push_tri(&mut s.lit, l0, r1, l1, line_c);
+                }
+                // TRAFFIC: Industrial era and beyond, vehicles drive the road. Each car's
+                // progress is a triangle wave of the clock (so it drives there and back),
+                // phase-offset per car; Space-age villages run sleek hover-pods.
+                if paved {
+                    let hover = era >= 4;
+                    for ci in 0..2u32 {
+                        let speed = 0.05 + 0.018 * ci as f32;
+                        let ph = (time * speed + ci as f32 * 0.5 + (i + j) as f32 * 0.13).fract();
+                        let (tri, dir) = if ph < 0.5 { (ph * 2.0, 1.0f32) } else { (2.0 - ph * 2.0, -1.0) };
+                        let u = 0.08 + tri * 0.84; // stay off the town centres
+                        let (cx, cz) = (ax + dx * u, az + dz * u);
+                        let cy = g(cx, cz) + lift; // sit on the raised road surface
+                        let heading = (uz * dir).atan2(ux * dir);
+                        let body = if hover {
+                            Color::hex(0x9fe0ff, 1.0).0
+                        } else {
+                            Color::hex(0xd64b3a, 1.0).0
+                        };
+                        let csc = 1.5; // a touch larger so the car reads at island zoom
+                        geo::push_car(&mut s.lit, cx, cy, cz, heading, csc, hover, body);
+                        // headlights (front, warm-white) + a red taillight (rear).
+                        let (fx, fz) = (cx + ux * dir * 0.8, cz + uz * dir * 0.8);
+                        let (rx, rz) = (cx - ux * dir * 0.8, cz - uz * dir * 0.8);
+                        glow(&mut s, [fx, cy + 0.3, fz], 0.55, Color::hex(0xfff3c8, 0.95));
+                        glow(&mut s, [rx, cy + 0.28, rz], 0.32, Color::hex(0xff4030, 0.75));
+                        if hover {
+                            glow(&mut s, [cx, cy + 0.12, cz], 0.8, Color::hex(0x55b0ff, 0.55));
+                        }
+                    }
+                }
+            }
+        }
         // village standards: a slim pole + a glowing pennant in the banner hue.
         for v in &world.villages {
             if v.population == 0 {
