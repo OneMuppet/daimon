@@ -69,6 +69,12 @@ struct Game {
     /// `None` ⇒ out on the island, exactly as before. Built on demand when the player
     /// presses E at a door (keyed by house, off a local rng — never touches the sim).
     interior: Option<interior::Interior>,
+    /// Cached house footprints for first-person EXTERIOR collision (solid walls).
+    /// Rebuilt only when the wall count changes (villages build over time), since
+    /// `house_anchors` flood-fills the wall set. Live-only render aid; the cache is
+    /// never read by the sim.
+    house_cache: Vec<interior::HouseRef>,
+    house_cache_walls: usize,
 }
 
 impl Game {
@@ -266,6 +272,8 @@ impl Game {
             keys: [false; 4],
             run: false,
             interior: None,
+            house_cache: Vec::new(),
+            house_cache_walls: usize::MAX,
         }
     }
 
@@ -294,6 +302,8 @@ impl Game {
             keys: [false; 4],
             run: false,
             interior: None,
+            house_cache: Vec::new(),
+            house_cache_walls: usize::MAX,
         }
     }
 
@@ -357,17 +367,21 @@ impl Game {
         }
         let Some(fp) = self.cam.fp else { return };
         let houses = interior::house_anchors(&self.world);
-        // nearest door within reach of the eye (ground-plane distance).
+        // nearest house by FOOTPRINT proximity (not just the south door) — so
+        // walking up to ANY wall and pressing E takes you inside that house.
         let mut best: Option<(f32, interior::HouseRef)> = None;
         for hr in houses {
-            let d = (fp.eye_x - hr.door_x).hypot(fp.eye_z - hr.door_z);
+            // distance from the eye to the footprint rectangle (0 if inside it).
+            let dx = (fp.eye_x - hr.cx).abs() - hr.hw;
+            let dz = (fp.eye_z - hr.cz).abs() - hr.hd;
+            let d = dx.max(0.0).hypot(dz.max(0.0));
             if best.as_ref().map(|(bd, _)| d < *bd).unwrap_or(true) {
                 best = Some((d, hr));
             }
         }
-        // door reach: stand within ~2 cells of the doorway to enter.
+        // reach: stand within ~1.6 cells of the building's wall to step inside.
         if let Some((d, hr)) = best {
-            if d <= 2.2 {
+            if d <= 1.6 {
                 self.enter_house(hr);
             }
         }
@@ -442,6 +456,17 @@ impl Game {
             let (w, h) = (self.world.w as f32, self.world.h as f32);
             fp.eye_x = fp.eye_x.clamp(0.5, w - 1.5);
             fp.eye_z = fp.eye_z.clamp(0.5, h - 1.5);
+            // SOLID HOUSES: refresh the footprint cache when the village has built
+            // (wall count changed), then keep the eye OUTSIDE every building — you
+            // can no longer walk through a house; press E at a wall to go inside.
+            let nwalls = self.world.walls.len();
+            if nwalls != self.house_cache_walls {
+                self.house_cache = interior::house_anchors(&self.world);
+                self.house_cache_walls = nwalls;
+            }
+            let (cx, cz) = interior::collide_houses(&self.house_cache, fp.eye_x, fp.eye_z, 0.34);
+            fp.eye_x = cx;
+            fp.eye_z = cz;
         }
     }
 

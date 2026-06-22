@@ -44,6 +44,12 @@ pub struct HouseRef {
     /// Footprint extent (cells) — drives how big/fancy the interior is.
     pub span: f32,
     pub area: f32,
+    /// Footprint HALF-extents in world cells (x = width, z = depth), so the
+    /// first-person walk can collide with the building's solid exterior. The
+    /// footprint rect is [cx±hw, cz±hd] — exactly the cells the exterior walls
+    /// are rendered over (same clustering + clamp as `build_structures`).
+    pub hw: f32,
+    pub hd: f32,
     /// The era this house wears (its material palette inside, too).
     pub era: Era,
 }
@@ -224,10 +230,45 @@ pub fn house_anchors(world: &GameWorld) -> Vec<HouseRef> {
             door_z: door_world_z,
             span,
             area,
+            hw: bw * 0.5,
+            hd: bd * 0.5,
             era: world.era_at(Pos::new((x0 + x1) / 2, (z0 + z1) / 2)),
         });
     }
     out
+}
+
+/// Keep a first-person walk position OUTSIDE every house footprint — the solid
+/// building exteriors. `r` is the standing radius (keeps the eye off the walls).
+/// Each house is pushed out along its axis of least penetration so you SLIDE
+/// along a wall rather than stick; two passes settle corners and adjacent
+/// houses. Live-only and read-only — never touches the sim.
+pub fn collide_houses(houses: &[HouseRef], mut x: f32, mut z: f32, r: f32) -> (f32, f32) {
+    for _ in 0..2 {
+        for h in houses {
+            let minx = h.cx - h.hw - r;
+            let maxx = h.cx + h.hw + r;
+            let minz = h.cz - h.hd - r;
+            let maxz = h.cz + h.hd + r;
+            if x > minx && x < maxx && z > minz && z < maxz {
+                let pen_w = x - minx; // push west
+                let pen_e = maxx - x; // push east
+                let pen_n = z - minz; // push north
+                let pen_s = maxz - z; // push south
+                let m = pen_w.min(pen_e).min(pen_n).min(pen_s);
+                if m == pen_w {
+                    x = minx;
+                } else if m == pen_e {
+                    x = maxx;
+                } else if m == pen_n {
+                    z = minz;
+                } else {
+                    z = maxz;
+                }
+            }
+        }
+    }
+    (x, z)
 }
 
 impl Interior {
@@ -595,4 +636,47 @@ fn push_wall_z(
     }
     push_box(out, [x, h * 0.5, cz], [t * 0.5, h * 0.5, hd], 0.0, c);
     push_box(out, [x + t * 0.4, 0.12, cz], [t * 0.2, 0.12, hd], 0.0, skirt);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn house(cx: f32, cz: f32, hw: f32, hd: f32) -> HouseRef {
+        HouseRef {
+            id: 1,
+            cx,
+            cz,
+            base_y: 0.0,
+            door_x: cx,
+            door_z: cz + hd + 0.5,
+            span: hw.max(hd) * 2.0,
+            area: hw * hd * 4.0,
+            hw,
+            hd,
+            era: Era::Stone,
+        }
+    }
+
+    #[test]
+    fn collision_keeps_eye_outside_footprint() {
+        // a 4×4 house centred at (10,10): footprint rect [8..12]×[8..12].
+        let houses = vec![house(10.0, 10.0, 2.0, 2.0)];
+        let r = 0.34;
+        // a point WALKED into the middle of the house must be pushed out so it is
+        // no longer inside the inflated footprint.
+        let (x, z) = collide_houses(&houses, 10.2, 10.0, r);
+        let inside = x > 10.0 - 2.0 - r
+            && x < 10.0 + 2.0 + r
+            && z > 10.0 - 2.0 - r
+            && z < 10.0 + 2.0 + r;
+        assert!(!inside, "eye left inside the house footprint: ({x},{z})");
+    }
+
+    #[test]
+    fn collision_leaves_distant_point_untouched() {
+        let houses = vec![house(10.0, 10.0, 2.0, 2.0)];
+        let (x, z) = collide_houses(&houses, 30.0, 30.0, 0.34);
+        assert!((x - 30.0).abs() < 1e-6 && (z - 30.0).abs() < 1e-6);
+    }
 }
