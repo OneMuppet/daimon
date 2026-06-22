@@ -3140,7 +3140,7 @@ fn dialog_answer(world: &GameWorld, i: usize, topic: usize) -> String {
         4 => match village {
             Some(v) => {
                 let era = if world.eras {
-                    format!(" We're in the {}.", v.era.name())
+                    format!(" We're in {}.", v.era.name())
                 } else {
                     String::new()
                 };

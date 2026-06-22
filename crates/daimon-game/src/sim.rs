@@ -520,12 +520,14 @@ impl Era {
     pub const LADDER: [Era; 5] = [Era::Stone, Era::Bronze, Era::Iron, Era::Industrial, Era::Space];
     /// A short display name for the HUD.
     pub fn name(self) -> &'static str {
+        // Generic age labels — the village clearly has houses/tools from the start, so
+        // "Stone Age" read wrong; these are just rungs on its own tech ladder.
         match self {
-            Era::Stone => "Stone Age",
-            Era::Bronze => "Bronze Age",
-            Era::Iron => "Iron Age",
-            Era::Industrial => "Industrial Age",
-            Era::Space => "Space Age",
+            Era::Stone => "Age 1",
+            Era::Bronze => "Age 2",
+            Era::Iron => "Age 3",
+            Era::Industrial => "Age 4",
+            Era::Space => "Age 5",
         }
     }
     /// The next era up the ladder, or `None` at the top (Space).

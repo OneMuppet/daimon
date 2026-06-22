@@ -70,8 +70,29 @@ enum Furniture {
     Chest { x: f32, z: f32 },
     /// A bookshelf/cupboard against a wall at (x,z), facing `face` (0=+z back wall…).
     Shelf { x: f32, z: f32, along_x: bool },
-    /// A floor rug at (x,z), half-size hw×hd.
+    /// A floor rug at (x,z), half-size hw×hd — dyed in the house's accent colour.
     Rug { x: f32, z: f32, hw: f32, hd: f32 },
+    /// A barrel / storage crate at (x,z) — workshop & store clutter.
+    Barrel { x: f32, z: f32 },
+    /// A cloth BANNER hanging on a wall — the house's accent colour. `wall`:
+    /// 0 = back (-z), 1 = left (-x), 2 = right (+x). `t` is the position along it.
+    Banner { wall: u8, t: f32 },
+    /// A WINDOW set into a wall — a bright daylit pane in a timber frame. Same `wall`
+    /// codes as Banner; `t` positions it along the wall, `w` is its half-width.
+    Window { wall: u8, t: f32, w: f32 },
+}
+
+/// What a building is FOR — chosen per-house, so two homes never share a loadout.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HomeKind {
+    /// A family dwelling: hearth, table, bed, chest, a rug.
+    Home,
+    /// A crafthouse: a big workbench, shelves, barrels & chests — no bed.
+    Workshop,
+    /// A bunkhouse: two (or more) beds, a small table.
+    Bunkhouse,
+    /// A grand hall (only the largest rooms): long table, two hearths, banners.
+    Hall,
 }
 
 /// A generated, walkable interior map for one house.
@@ -88,6 +109,9 @@ pub struct Interior {
     furniture: Vec<Furniture>,
     /// Era palette for the interior surfaces.
     style: pieces::EraStyle,
+    /// This house's own ACCENT colour (a dyed-cloth hue picked from its identity),
+    /// used on the rug, bedding, and wall banners so no two homes read identical.
+    accent: [f32; 4],
     /// Warm hearth glow positions (local frame), lit additively each frame.
     hearths: Vec<[f32; 3]>,
 }
@@ -115,6 +139,23 @@ impl LocalRng {
     fn chance(&mut self, p: f32) -> bool {
         self.unit() < p
     }
+}
+
+/// A dyed-cloth ACCENT colour from a unit hue — a small ring of warm, saturated
+/// tones so each house's rug/bedding/banner reads as its own.
+fn accent_hue(h: f32) -> [f32; 4] {
+    const PALETTE: [[f32; 4]; 8] = [
+        [0.74, 0.22, 0.20, 1.0], // crimson
+        [0.80, 0.46, 0.16, 1.0], // amber
+        [0.66, 0.58, 0.22, 1.0], // gold
+        [0.30, 0.52, 0.34, 1.0], // forest green
+        [0.24, 0.46, 0.62, 1.0], // teal-blue
+        [0.34, 0.36, 0.66, 1.0], // indigo
+        [0.55, 0.30, 0.56, 1.0], // violet
+        [0.70, 0.40, 0.45, 1.0], // rose
+    ];
+    let i = ((h * PALETTE.len() as f32) as usize).min(PALETTE.len() - 1);
+    PALETTE[i]
 }
 
 fn era_style(era: Era) -> pieces::EraStyle {
@@ -280,12 +321,18 @@ impl Interior {
         let mut rng = LocalRng::new(house.id);
         let style = era_style(house.era);
 
-        // Room size scales with the footprint, but is always a comfortable walk-in
-        // size (never a cupboard). Span ~3..7 cells maps to a ~5..9 unit room.
+        // PER-HOUSE ACCENT — a dyed-cloth hue picked from this house's identity, worn
+        // by its rug, bedding and banners so no two homes read the same.
+        let accent = accent_hue(rng.unit());
+
+        // ROOM SHAPE: vary the aspect per house — some long, some square, some wide —
+        // so the SPACE itself differs, not just the contents.
         let s = house.span.clamp(2.0, 7.0);
-        let hx = (2.2 + 0.55 * s + rng.unit() * 0.6).clamp(2.2, 5.2);
-        let hz = (2.2 + 0.55 * s + rng.unit() * 0.6).clamp(2.2, 5.2);
-        let wall_h = 2.4 + 0.25 * rng.unit();
+        let base = 2.3 + 0.5 * s;
+        let skew = 0.72 + rng.unit() * 0.85; // 0.72..1.57 aspect skew
+        let hx = (base * skew.sqrt() + rng.unit() * 0.4).clamp(2.2, 5.4);
+        let hz = (base / skew.sqrt() + rng.unit() * 0.4).clamp(2.2, 5.4);
+        let wall_h = 2.3 + 0.5 * rng.unit();
         let door_hw = 0.55;
 
         // "fanciness" 0..1 — drives how much furniture: footprint size + era rung.
@@ -299,6 +346,20 @@ impl Interior {
         let size_f = ((house.area - 4.0) / 24.0).clamp(0.0, 1.0);
         let fancy = (0.45 * size_f + 0.55 * era_rung).clamp(0.0, 1.0);
 
+        // HOME KIND — what the building is for. The roll is per-house, so a street of
+        // same-era houses still reads as a mix of homes, workshops, bunkhouses and the
+        // odd grand hall (the largest rooms only).
+        let roll = rng.unit();
+        let kind = if fancy > 0.55 && roll < 0.28 {
+            HomeKind::Hall
+        } else if roll < 0.30 {
+            HomeKind::Workshop
+        } else if roll < 0.48 {
+            HomeKind::Bunkhouse
+        } else {
+            HomeKind::Home
+        };
+
         let mut furniture = Vec::new();
         let mut hearths = Vec::new();
 
@@ -307,72 +368,143 @@ impl Interior {
         let ix = hx - m;
         let iz = hz - m;
 
-        // 1) HEARTH against the back (-z) wall, slightly off-centre. Always present —
-        // it's the heart of the home and the warm light source inside.
-        let hearth_x = (rng.unit() - 0.5) * ix * 0.8;
+        // HEARTH against the back (-z) wall, slightly off-centre — the warm heart of
+        // every building. A Hall gets a second one in a corner.
+        let hearth_x = (rng.unit() - 0.5) * ix * 0.7;
         let hearth_z = -iz + 0.15;
         furniture.push(Furniture::Hearth { x: hearth_x, z: hearth_z });
         hearths.push([hearth_x, 0.0, hearth_z]);
+        if kind == HomeKind::Hall {
+            let bx = ix - 0.5;
+            let bz = iz - 0.6;
+            furniture.push(Furniture::Hearth { x: bx, z: bz });
+            hearths.push([bx, 0.0, bz]);
+        }
 
-        // 2) RUG in the middle (a softer floor read). Bigger homes get a rug.
-        if fancy > 0.2 {
+        // RUG (accent-dyed) — most homes/halls have one; workshops bare boards.
+        if matches!(kind, HomeKind::Home | HomeKind::Hall) || rng.chance(0.3) {
             furniture.push(Furniture::Rug {
                 x: 0.0,
                 z: 0.2,
-                hw: (ix * 0.5).min(1.4),
-                hd: (iz * 0.45).min(1.2),
+                hw: (ix * 0.52).min(if kind == HomeKind::Hall { 2.0 } else { 1.4 }),
+                hd: (iz * 0.46).min(1.3),
             });
         }
 
-        // 3) TABLE + CHAIRS near the centre. A home always has a table.
-        let tx = (rng.unit() - 0.5) * ix * 0.4;
-        let tz = 0.2 + (rng.unit() - 0.5) * 0.4;
-        let thw = (0.55 + 0.2 * fancy).min(ix * 0.4);
-        let thd = (0.40 + 0.15 * fancy).min(iz * 0.4);
+        // TABLE — central in a home/hall (a long table in a hall), pushed aside as a
+        // workbench in a workshop, small in a bunkhouse.
+        let workbench = kind == HomeKind::Workshop;
+        let (tx, tz) = if workbench {
+            (0.0, -iz + 0.55) // a bench against the back, under the window light
+        } else {
+            ((rng.unit() - 0.5) * ix * 0.35, 0.2 + (rng.unit() - 0.5) * 0.4)
+        };
+        let thw = if kind == HomeKind::Hall {
+            (ix * 0.55).min(2.0)
+        } else if workbench {
+            (ix * 0.6).min(1.6)
+        } else if kind == HomeKind::Bunkhouse {
+            0.45
+        } else {
+            (0.55 + 0.2 * fancy).min(ix * 0.4)
+        };
+        let thd = if workbench { 0.30 } else { (0.40 + 0.15 * fancy).min(iz * 0.4) };
         furniture.push(Furniture::Table { x: tx, z: tz, hw: thw, hd: thd });
-        // chairs around the table: 2 base, up to 4 when fancy.
-        let n_chairs = 2 + (fancy * 2.0).round() as i32;
+        // chairs: a hall seats four, a home two-or-three, a workshop one stool.
+        let n_chairs = match kind {
+            HomeKind::Hall => 4,
+            HomeKind::Workshop => 1,
+            HomeKind::Bunkhouse => 2,
+            HomeKind::Home => 2 + (fancy * 1.5).round() as i32,
+        };
         let chair_spots = [
             (tx, tz - thd - 0.45),
             (tx, tz + thd + 0.45),
             (tx - thw - 0.45, tz),
             (tx + thw + 0.45, tz),
         ];
-        for spot in chair_spots.iter().take(n_chairs.clamp(2, 4) as usize) {
-            // keep chairs inside the room.
+        for spot in chair_spots.iter().take(n_chairs.clamp(1, 4) as usize) {
             if spot.0.abs() < ix && spot.1.abs() < iz {
                 furniture.push(Furniture::Chair { x: spot.0, z: spot.1 });
             }
         }
 
-        // 4) BED in a corner (the -x,+z corner — away from the door gap centre).
-        let along_x = rng.chance(0.5);
-        furniture.push(Furniture::Bed {
-            x: -ix + if along_x { 0.9 } else { 0.55 },
-            z: -iz + if along_x { 0.55 } else { 0.9 },
-            along_x,
-        });
-
-        // 5) CHEST against a side wall.
-        furniture.push(Furniture::Chest {
-            x: ix - 0.3,
-            z: -iz + 0.6 + rng.unit() * (iz * 0.6),
-        });
-
-        // 6) SHELF / cupboard — fancier homes get one (or two).
-        if fancy > 0.35 {
-            furniture.push(Furniture::Shelf { x: ix - 0.18, z: 0.3, along_x: false });
+        // BEDS — a home has one, a bunkhouse two (both back corners), a workshop none.
+        let beds = match kind {
+            HomeKind::Bunkhouse => 2,
+            HomeKind::Workshop => 0,
+            _ => 1,
+        };
+        if beds >= 1 {
+            let along_x = rng.chance(0.5);
+            furniture.push(Furniture::Bed {
+                x: -ix + if along_x { 0.95 } else { 0.6 },
+                z: -iz + if along_x { 0.6 } else { 0.95 },
+                along_x,
+            });
         }
-        if fancy > 0.7 {
-            furniture.push(Furniture::Shelf { x: -ix + 0.18, z: 0.4, along_x: false });
+        if beds >= 2 {
+            furniture.push(Furniture::Bed {
+                x: ix - 0.95,
+                z: -iz + 0.6,
+                along_x: true,
+            });
         }
 
-        // 7) A second small hearth/brazier glow for the largest, latest homes (more
-        // light, reads as a grander hall).
-        if fancy > 0.8 {
-            let bx = ix - 0.5;
-            let bz = iz - 0.5;
-            hearths.push([bx, 0.0, bz]);
+        // CHESTS + BARRELS — storage scales with kind (a workshop is full of it).
+        let n_chests = if workbench { 2 } else { 1 };
+        for c in 0..n_chests {
+            furniture.push(Furniture::Chest {
+                x: ix - 0.3,
+                z: -iz + 0.6 + c as f32 * 0.9 + rng.unit() * (iz * 0.3),
+            });
+        }
+        let n_barrels = match kind {
+            HomeKind::Workshop => 2 + (rng.unit() * 2.0) as i32,
+            HomeKind::Hall => 1 + (rng.unit() * 2.0) as i32,
+            _ => (rng.unit() * 1.6) as i32,
+        };
+        for _ in 0..n_barrels {
+            let bx = (rng.unit() * 2.0 - 1.0) * (ix - 0.3);
+            let bz = (rng.unit() * 2.0 - 1.0) * (iz - 0.3);
+            furniture.push(Furniture::Barrel { x: bx, z: bz });
+        }
+
+        // SHELVES — a workshop is lined with them; fancier homes get one or two.
+        let n_shelves = match kind {
+            HomeKind::Workshop => 3,
+            HomeKind::Hall => 2,
+            _ => (fancy > 0.35) as i32 + (fancy > 0.7) as i32,
+        };
+        for snum in 0..n_shelves {
+            let side = snum % 2 == 0;
+            furniture.push(Furniture::Shelf {
+                x: if side { ix - 0.18 } else { -ix + 0.18 },
+                z: -iz * 0.4 + snum as f32 * 0.7,
+                along_x: false,
+            });
+        }
+
+        // BANNER — a wall-hung cloth in the accent colour (homes & halls show one;
+        // a hall shows two). The clearest per-house "this home is different" signal.
+        if matches!(kind, HomeKind::Home | HomeKind::Hall) {
+            furniture.push(Furniture::Banner { wall: 0, t: (rng.unit() - 0.5) * 1.2 });
+            if kind == HomeKind::Hall {
+                furniture.push(Furniture::Banner { wall: if rng.chance(0.5) { 1 } else { 2 }, t: (rng.unit() - 0.5) * 1.0 });
+            }
+        }
+
+        // WINDOWS — 1..3 bright daylit panes set into the side/back walls at varied
+        // spots, so even bare rooms differ and the interior reads as a real room.
+        let n_windows = 1 + (rng.unit() * 2.5) as i32; // 1..3
+        for _ in 0..n_windows {
+            let wall = (rng.unit() * 3.0) as u8 % 3; // 0 back, 1 left, 2 right
+            // keep a back-wall window clear of the hearth.
+            let t = (rng.unit() - 0.5) * 1.4;
+            if wall == 0 && (t - hearth_x).abs() < 0.9 {
+                continue;
+            }
+            furniture.push(Furniture::Window { wall, t, w: 0.32 + rng.unit() * 0.12 });
         }
 
         Interior {
@@ -383,6 +515,7 @@ impl Interior {
             door_hw,
             furniture,
             style,
+            accent,
             hearths,
         }
     }
@@ -489,7 +622,6 @@ impl Interior {
     }
 
     fn build_furniture(&self, lit: &mut Vec<LitVertex>, f: Furniture) {
-        let st = &self.style;
         let oak = pieces::TIMBER;
         let oak_lt = pieces::TIMBER_LT;
         match f {
@@ -528,7 +660,7 @@ impl Interior {
                 push_box(lit, [x, 0.30, z], [hw - 0.06, 0.06, hd - 0.06], 0.0, linen);
                 // pillow at one end + a coloured blanket band.
                 let pillow = [0.92, 0.90, 0.84, 1.0];
-                let blanket = mul(st.glass, 0.5);
+                let blanket = self.accent; // the house's own accent-dyed blanket
                 if along_x {
                     push_box(lit, [x - hw + 0.22, 0.37, z], [0.18, 0.05, hd - 0.10], 0.0, pillow);
                     push_box(lit, [x + 0.25, 0.37, z], [hw - 0.45, 0.04, hd - 0.06], 0.0, blanket);
@@ -577,11 +709,71 @@ impl Interior {
                 }
             }
             Furniture::Rug { x, z, hw, hd } => {
-                let rug = mul(st.glass, 0.4);
-                let border = mul(st.trim, 1.1);
-                // a thin slab just above the floor with a darker border ring.
+                // a thin slab just above the floor: a darker border ring + the
+                // house's accent-dyed field, so each home's rug differs.
+                let rug = self.accent;
+                let border = mul(self.accent, 0.55);
                 push_box(lit, [x, 0.005, z], [hw, 0.006, hd], 0.0, border);
                 push_box(lit, [x, 0.008, z], [hw - 0.08, 0.006, hd - 0.08], 0.0, rug);
+            }
+            Furniture::Barrel { x, z } => {
+                // a stout storage barrel — a body + a lighter band + a lid.
+                let band = mul(oak_lt, 1.05);
+                push_box(lit, [x, 0.24, z], [0.17, 0.24, 0.17], 0.0, oak);
+                push_box(lit, [x, 0.24, z], [0.185, 0.05, 0.185], 0.0, band);
+                push_box(lit, [x, 0.40, z], [0.16, 0.03, 0.16], 0.0, oak_lt);
+            }
+            Furniture::Banner { wall, t } => {
+                // a cloth banner hung high on a wall in the accent colour, on a rod.
+                let (hx, hz) = (self.hx, self.hz);
+                let wt = 0.13;
+                let y = self.wall_h - 0.9;
+                let (cx, cz, rod_along_x) = match wall {
+                    0 => (t, -hz + wt, true),  // back wall
+                    1 => (-hx + wt, t, false), // left wall
+                    _ => (hx - wt, t, false),  // right wall
+                };
+                // the cloth: a thin panel hanging down the wall face.
+                let cloth = if rod_along_x {
+                    [0.36f32, 0.5, 0.03]
+                } else {
+                    [0.03, 0.5, 0.36]
+                };
+                push_box(lit, [cx, y, cz], cloth, 0.0, self.accent);
+                // a thin lighter chevron stripe across it + a top rod.
+                let stripe = if rod_along_x { [0.30f32, 0.06, 0.035] } else { [0.035, 0.06, 0.30] };
+                push_box(lit, [cx, y + 0.12, cz], stripe, 0.0, mul(self.accent, 1.5));
+                let rod = if rod_along_x { [0.42f32, 0.025, 0.04] } else { [0.04, 0.025, 0.42] };
+                push_box(lit, [cx, y + 0.52, cz], rod, 0.0, oak);
+            }
+            Furniture::Window { wall, t, w } => {
+                // a daylit pane in a timber frame, recessed into a wall. The bright
+                // pane reads as a window even in an otherwise bare room.
+                let (hx, hz) = (self.hx, self.hz);
+                let wt = 0.10;
+                let y = 1.3;
+                let pane = [0.74, 0.84, 0.93, 1.0]; // bright daylight
+                let frame = pieces::TIMBER;
+                let (along_x, cx, cz) = match wall {
+                    0 => (true, t, -hz + wt),
+                    1 => (false, -hx + wt, t),
+                    _ => (false, hx - wt, t),
+                };
+                let (fr, pn) = if along_x {
+                    ([w + 0.07, 0.40, 0.04], [w, 0.33, 0.025])
+                } else {
+                    ([0.04, 0.40, w + 0.07], [0.025, 0.33, w])
+                };
+                push_box(lit, [cx, y, cz], fr, 0.0, frame); // frame
+                push_box(lit, [cx, y, cz], pn, 0.0, pane); // pane
+                // a muntin cross so it reads as a paned window.
+                if along_x {
+                    push_box(lit, [cx, y, cz], [w, 0.03, 0.03], 0.0, frame);
+                    push_box(lit, [cx, y, cz], [0.03, 0.33, 0.03], 0.0, frame);
+                } else {
+                    push_box(lit, [cx, y, cz], [0.03, 0.03, w], 0.0, frame);
+                    push_box(lit, [cx, y, cz], [0.03, 0.33, 0.03], 0.0, frame);
+                }
             }
         }
     }
@@ -678,5 +870,52 @@ mod tests {
         let houses = vec![house(10.0, 10.0, 2.0, 2.0)];
         let (x, z) = collide_houses(&houses, 30.0, 30.0, 0.34);
         assert!((x - 30.0).abs() < 1e-6 && (z - 30.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_same_house_always_yields_the_same_interior() {
+        let mut hr = house(10.0, 10.0, 3.0, 3.0);
+        hr.id = 0xABCD_1234;
+        let a = Interior::for_house(hr);
+        let b = Interior::for_house(hr);
+        // determinism: identical id ⇒ identical room (accent + furniture count).
+        assert_eq!(a.accent, b.accent);
+        assert_eq!(a.furniture.len(), b.furniture.len());
+        assert_eq!(a.hx, b.hx);
+    }
+
+    #[test]
+    fn different_houses_yield_varied_interiors() {
+        // build a street of houses (distinct ids) and confirm the interiors are NOT
+        // all the same — a spread of accents and loadouts, not one repeated template.
+        let mut accents = std::collections::HashSet::new();
+        let mut loadouts = std::collections::HashSet::new();
+        for k in 0u64..24 {
+            let mut hr = house(10.0, 10.0, 3.0 + (k % 4) as f32, 3.0 + (k % 3) as f32);
+            hr.id = k.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x1234;
+            let it = Interior::for_house(hr);
+            // accent as integer bits so it's hashable.
+            let acc = it.accent.map(|c| (c * 255.0) as u8);
+            accents.insert(acc);
+            // a coarse loadout signature: counts of each furniture variant.
+            let mut sig = [0u8; 9];
+            for f in &it.furniture {
+                let i = match f {
+                    Furniture::Table { .. } => 0,
+                    Furniture::Chair { .. } => 1,
+                    Furniture::Bed { .. } => 2,
+                    Furniture::Hearth { .. } => 3,
+                    Furniture::Chest { .. } => 4,
+                    Furniture::Shelf { .. } => 5,
+                    Furniture::Rug { .. } => 6,
+                    Furniture::Barrel { .. } => 7,
+                    Furniture::Banner { .. } | Furniture::Window { .. } => 8,
+                };
+                sig[i] = sig[i].saturating_add(1);
+            }
+            loadouts.insert(sig);
+        }
+        assert!(accents.len() >= 4, "too few distinct accents: {}", accents.len());
+        assert!(loadouts.len() >= 5, "interiors too samey: {} distinct loadouts", loadouts.len());
     }
 }
