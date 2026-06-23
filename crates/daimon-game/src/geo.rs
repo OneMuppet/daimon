@@ -658,8 +658,26 @@ pub fn grove_centers(w: i32, h: i32) -> Vec<(f32, f32, f32)> {
     out
 }
 
+/// Deterministic ROCK-FIELD centres — like [`grove_centers`] but a separate, sparser
+/// set (a different seed, so boulder fields land in DIFFERENT places than the woods),
+/// with tighter radii so stone reads as scattered outcrops/boulder fields rather than
+/// an even sprinkle. Pure function of the dimensions.
+pub fn rock_centers(w: i32, h: i32) -> Vec<(f32, f32, f32)> {
+    let n = (((w * h) / 2600).clamp(2, 6)) as u64;
+    let mut out = Vec::new();
+    for i in 0..n {
+        let hc = splitmix(0x2A0C_C53Eu64 ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let gx = (0.12 + hash_unit(hc, 1) * 0.76) * w as f32;
+        let gz = (0.12 + hash_unit(hc, 2) * 0.76) * h as f32;
+        let rad = 4.0 + hash_unit(hc, 3) * 5.0; // tighter than a forest grove
+        out.push((gx, gz, rad));
+    }
+    out
+}
+
 /// Forest DENSITY at `(x, z)` in `[0,1]` — a smooth sum of gaussian bumps around
 /// the [`grove_centers`], so trees crowd inside groves and thin out between them.
+/// (Also reused for rock-field density via [`rock_centers`].)
 pub fn forest_density(x: f32, z: f32, groves: &[(f32, f32, f32)]) -> f32 {
     let mut d = 0.0f32;
     for &(gx, gz, rad) in groves {
@@ -675,6 +693,7 @@ pub fn forest_density(x: f32, z: f32, groves: &[(f32, f32, f32)]) -> f32 {
 /// island's groves (dense woods in a few places); boulders/grass stay sprinkled.
 fn scatter_flora(out: &mut Vec<LitVertex>, w: i32, h: i32) {
     let groves = grove_centers(w, h);
+    let rocks = rock_centers(w, h);
     let (cx, cz) = (w as f32 * 0.5, h as f32 * 0.5);
     let radius = (w.max(h) as f32) * 0.62;
     let step = 1.4f32;
@@ -693,8 +712,11 @@ fn scatter_flora(out: &mut Vec<LitVertex>, w: i32, h: i32) {
             let roll = hash_unit(hh, 3);
             // trees crowd into the groves and thin out between them: dense canopy where
             // the forest density is high, only the odd lone tree on the open land.
-            let density = forest_density(jx, jz, &groves);
-            let tree_p = 0.03 + 0.62 * density;
+            let tree_p = 0.03 + 0.62 * forest_density(jx, jz, &groves);
+            // boulders crowd into ROCK FIELDS the same way (their own clusters, in
+            // different places than the woods): a dense scree where rock density is high,
+            // only the odd lone stone on the open land.
+            let rock_p = 0.015 + 0.5 * forest_density(jx, jz, &rocks);
             if roll < tree_p {
                 // a conifer: trunk + two foliage tiers
                 let th = 0.5 + hash_unit(hh, 4) * 0.6;
@@ -704,8 +726,8 @@ fn scatter_flora(out: &mut Vec<LitVertex>, w: i32, h: i32) {
                 push_box(out, [jx, g + th * 0.4, jz], [0.07, th * 0.4, 0.07], 0.0, trunk);
                 push_cone(out, jx, g + th * 0.35, jz, 0.42, 0.85, 5, leaf);
                 push_cone(out, jx, g + th * 0.35 + 0.55, jz, 0.30, 0.7, 5, leaf);
-            } else if roll < 0.40 {
-                // a mossy boulder
+            } else if roll < tree_p + rock_p {
+                // a mossy boulder (clustered into rock fields)
                 let r = 0.18 + hash_unit(hh, 7) * 0.28;
                 let grey = 0.40 + hash_unit(hh, 8) * 0.12;
                 push_box(
@@ -715,7 +737,7 @@ fn scatter_flora(out: &mut Vec<LitVertex>, w: i32, h: i32) {
                     hash_unit(hh, 9) * 3.0,
                     [grey, grey * 1.02, grey * 1.04, 1.0],
                 );
-            } else if roll < 0.62 {
+            } else if roll < tree_p + rock_p + 0.22 {
                 // a grass tuft
                 let gh = 0.12 + hash_unit(hh, 10) * 0.18;
                 push_cone(out, jx, g, jz, 0.12, gh, 4, [0.30, 0.46, 0.20, 1.0]);
