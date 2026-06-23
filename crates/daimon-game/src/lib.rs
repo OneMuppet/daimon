@@ -176,6 +176,11 @@ impl Game {
         // HUNTING on for the live showcase: villagers take adjacent deer/sheep for meat.
         // Live-only (opportunistic, no new pathing); the harness never flips it.
         world.set_hunting(true);
+        // SCARCITY WORLD on for the live showcase: villagers move with PURPOSE toward
+        // their gather targets (no aimless wandering while there's work), and resource
+        // scarcity — the island thinning under a growing people — drives wars over the
+        // dwindling land. Live-only; the harness + balance tests never flip it.
+        world.set_scarcity_world(true);
         // LIFE-CYCLE on for the live showcase: aging, pair-bonds, inherited children,
         // natural death. Live-only and seeded off a dedicated side-RNG, so the seeded
         // harness/AC/proof paths (which never call this) stay byte-identical. The

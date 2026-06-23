@@ -89,6 +89,15 @@ const BORDER_DEATH_PUSH: f32 = 0.300;
 /// heavier the overlap, the harder it sours, so a genuinely contested border drives a
 /// pair toward open rivalry even as the odd marriage pulls the other way.
 const CONTENTION_PUSH: f32 = 0.022;
+/// Affinity lost per evaluation scaled by a pair's combined RESOURCE SCARCITY — the
+/// economic engine of war: as villages work the land thin they covet what their
+/// neighbours still have, and the border sours toward war. Only applied in a
+/// `scarcity_world` (the live game), so the seed-tuned balance tests never feel it.
+const SCARCITY_PUSH: f32 = 0.05;
+/// Standing wood+stone per head at/above which the land feels comfortable (scarcity 0);
+/// scarcity climbs toward 1 as the per-head share falls below it. Tuned so the live
+/// island sits in a fluctuating mid-range — flush in good times, pinched as it grows.
+const SCARCITY_COMFORT: f32 = 1.5;
 /// Cap on |affinity| from the per-evaluation drift, so no relation saturates at the
 /// rail — it always has room to SHIFT back (allies can cool, enemies can thaw).
 const AFFINITY_SOFT_CAP: f32 = 0.85;
@@ -882,6 +891,10 @@ pub struct GameWorld {
     /// new pathing. Enabled ONLY by the live `Game::new`; the harness and the seed-tuned
     /// society/war balance tests never flip it, so they are byte-identical.
     pub hunting: bool,
+    /// LIVE-ONLY SCARCITY WORLD (default false): villagers move purposefully toward their
+    /// gather target, and resource scarcity (thinning wood+stone per head) drives wars.
+    /// Enabled ONLY by `Game::new`; the harness + balance tests leave it off → byte-identical.
+    pub scarcity_world: bool,
     /// The wolf pack(s): grey pack hunters. Empty unless `wildlife`.
     pub wolves: Vec<Wolf>,
     /// The solitary bears. Empty unless `wildlife`.
@@ -1454,6 +1467,7 @@ impl GameWorld {
             rocks: Vec::new(),
             wildlife: false,
             hunting: false,
+            scarcity_world: false,
             wolves: Vec::new(),
             bears: Vec::new(),
             deer: Vec::new(),
@@ -2271,6 +2285,23 @@ impl GameWorld {
         }
     }
 
+    /// RESOURCE SCARCITY in `[0,1]` (0 = plenty, 1 = dire) — a world-level Malthusian
+    /// pressure: the island's total standing wood + stone measured against the mouths
+    /// that depend on it. Flush early (few people, full woods); climbs as the population
+    /// grows and the land is worked down. Independent of WHERE minds gather, so it never
+    /// fights the inter-village mixing that keeps the society alive. Zero off a materials
+    /// world. (`_v` reserved for a future per-village split; currently world-uniform.)
+    pub fn village_scarcity(&self, _v: u8) -> f32 {
+        if !self.materials_econ {
+            return 0.0;
+        }
+        let standing: f32 = self.trees.iter().map(|t| t.wood).sum::<f32>()
+            + self.rocks.iter().map(|r| r.stone).sum::<f32>();
+        let mouths = self.living_count().max(1) as f32;
+        let pc = standing / mouths;
+        ((SCARCITY_COMFORT - pc) / SCARCITY_COMFORT).clamp(0.0, 1.0)
+    }
+
     /// Count this village's living adult minds that *can* bear arms (the muster pool).
     fn fighter_pool(&self, v: u8) -> usize {
         self.agents
@@ -2780,6 +2811,10 @@ impl GameWorld {
             }
         }
 
+        // world-level resource scarcity (computed before the mut-borrow of relations);
+        // zero unless this is a `scarcity_world`, so other worlds' drift is unchanged.
+        let scarcity = if self.scarcity_world { self.village_scarcity(0) } else { 0.0 };
+
         // --- drift each pair's affinity from the tallies, then decay toward 0 ---
         for rel in &mut self.relations {
             let a = rel.a as usize;
@@ -2798,6 +2833,7 @@ impl GameWorld {
             delta += (c.min(8) as f32) * CONTACT_PULL; // good neighbours → warmer
             delta -= (d as f32) * BORDER_DEATH_PUSH; // a loss across the line → hostile
             delta -= (cz.min(12) as f32) * CONTENTION_PUSH; // contested ground → rivalry
+            delta -= scarcity * SCARCITY_PUSH; // hard times → covet a neighbour's land
             rel.affinity = (rel.affinity + delta).clamp(-1.0, 1.0);
             // slow relax toward neutral so relations are never permanent (allies cool,
             // enemies thaw) — the larger the standing, the stronger the pull back.
@@ -3957,6 +3993,18 @@ impl GameWorld {
                         }
                     }
                     } // end !marched (warriors skip peacetime avoidance)
+                    // PURPOSE (scarcity world): when there is gathering to do, the
+                    // villager steers decisively toward the resource its gather sense
+                    // points at instead of wandering — and the pull RELEASES once it's
+                    // there (gather_dir → None), so up close it acts freely and mixes
+                    // with whoever is near. Idle (nothing to gather) it roams as before,
+                    // so villages still intermingle. Gated on the live flag, so seeded
+                    // balance worlds are byte-identical. Warriors (marched) are exempt.
+                    if !marched && self.scarcity_world {
+                        if let Some(td) = me.gather_dir.or(me.store_dir) {
+                            dir = td;
+                        }
+                    }
                     let np = self.clamp(me.pos.step(dir));
                     // Walls are solid: an agent cannot step into a wall cell (so a
                     // fully-walled agent has shut itself in). `walls` is empty unless
@@ -5131,6 +5179,16 @@ impl GameWorld {
         self.hunting = on;
     }
 
+    /// Turn on the LIVE-ONLY SCARCITY WORLD (the economic engine of purpose + conflict):
+    /// villagers move with PURPOSE toward the resource they're gathering (no aimless
+    /// wandering while there's work), and as the island's standing wood + stone thins
+    /// under a growing population, RESOURCE SCARCITY drifts neighbours toward war over
+    /// the dwindling land. Gated by this flag and enabled ONLY by the live `Game::new`,
+    /// so the seed-tuned society/war balance tests (which never call it) are byte-identical.
+    pub fn set_scarcity_world(&mut self, on: bool) {
+        self.scarcity_world = on;
+    }
+
     /// OPPORTUNISTIC HUNT: any adult villager standing next to a live deer or sheep may
     /// take it — restoring its energy + a little health, despawning the animal (it
     /// respawns elsewhere). It does NOT steer minds toward prey (no new pathing), so it
@@ -5913,6 +5971,55 @@ mod tests {
         w.set_eras(true);
         w.set_war(true);
         w
+    }
+
+    /// The full LIVE showcase stack including the scarcity world (matches `Game::new`).
+    fn live_scarcity_world(seed: u64, n_villages: usize) -> GameWorld {
+        let mut w = live_war_world(seed, n_villages);
+        w.set_hunting(true);
+        w.set_scarcity_world(true);
+        w
+    }
+
+    #[test]
+    fn scarcity_drives_wars_and_world_survives() {
+        // In the SCARCITY WORLD, as the island thins under its growing people, resource
+        // scarcity must build and drive emergent wars over the dwindling land — wars that
+        // are bounded PER WAR and survivable (births keep the world turning over), with
+        // the villages persisting. This is the gated live behaviour; the seed-tuned
+        // balance worlds (no scarcity flag) are covered separately and stay unchanged.
+        let mut w = live_scarcity_world(0x61, 4);
+        let mut saw_warband = false;
+        let mut peak_band = 0usize;
+        let mut peak_scarcity = 0.0f32;
+        for _ in 0..16000 {
+            w.step();
+            let band = w.agents.iter().filter(|a| a.alive && a.warband.is_some()).count();
+            saw_warband |= band > 0;
+            peak_band = peak_band.max(band);
+            peak_scarcity = peak_scarcity.max(w.village_scarcity(0));
+        }
+        assert!(peak_scarcity > 0.25, "the land genuinely got scarce (peak {peak_scarcity:.2})");
+        assert!(w.wars_declared >= 1, "scarcity drove at least one war");
+        assert!(saw_warband, "a warband actually mustered");
+        // warbands stay a minority of the living world (never an all-in levy).
+        assert!(
+            peak_band < w.living_count().max(1) / 3 + 1,
+            "warbands a minority ({peak_band} of {} alive)",
+            w.living_count()
+        );
+        // casualties bounded PER WAR (the per-war cap stops annihilation).
+        assert!(
+            w.war_casualties <= w.wars_resolved.max(1) * WAR_CASUALTY_CAP,
+            "per-war casualties capped ({} dead over {} wars)",
+            w.war_casualties,
+            w.wars_resolved
+        );
+        assert!(w.living_count() > 40, "world survives the scarcity wars ({} alive)", w.living_count());
+        assert!(
+            w.villages.iter().filter(|v| v.population > 0).count() >= 2,
+            "multiple villages persist"
+        );
     }
 
     #[test]
