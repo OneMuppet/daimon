@@ -874,6 +874,18 @@ pub fn build_full(
         geo::push_box(&mut s.lit, [x, gy + s0 * 0.5, z], [s0, s0 * 0.7, s0], 0.0, Color::hex(0x8d8579, 1.0).0);
         geo::push_box(&mut s.lit, [x + s0 * 0.7, gy + s0 * 0.3, z - s0 * 0.4], [s0 * 0.5, s0 * 0.42, s0 * 0.5], 0.0, Color::hex(0x787064, 1.0).0);
         geo::push_box(&mut s.lit, [x - s0 * 0.6, gy + s0 * 0.28, z + s0 * 0.5], [s0 * 0.45, s0 * 0.38, s0 * 0.45], 0.0, Color::hex(0x9a9286, 1.0).0);
+        // MINE: a rock worked thin becomes a quarry/mine — a dark dug mouth and a timber
+        // headframe over it — so a depleted outcrop visibly reads as a working mine.
+        if world.scarcity_world && r.stone < 0.5 {
+            let timber = Color::hex(0x5a4127, 1.0).0;
+            geo::push_box(&mut s.lit, [x, gy + 0.02, z], [0.34, 0.04, 0.34], 0.0, Color::hex(0x241d15, 1.0).0); // dug mouth
+            for sx in [-1.0f32, 1.0] {
+                geo::push_box(&mut s.lit, [x + sx * 0.30, gy + 0.28, z], [0.05, 0.30, 0.05], sx * 0.18, timber); // leg
+            }
+            geo::push_box(&mut s.lit, [x, gy + 0.58, z], [0.42, 0.05, 0.07], 0.0, timber); // headframe beam
+            geo::push_box(&mut s.lit, [x, gy + 0.10, z + 0.40], [0.12, 0.08, 0.10], 0.0, Color::hex(0x3a342c, 1.0).0); // an ore-cart tub
+            glow(&mut s, [x, gy + 0.12, z], 0.4, Color::hex(0xffb066, 0.18)); // a warm pit-lamp glint
+        }
     }
     // ---- materials economy: the village build-yard at the heart ----
     // A timber + stone stockpile by the hearth showing the village's materials on hand:
@@ -895,6 +907,15 @@ pub fn build_full(
         let sr = 0.16 + 0.30 * stonef;
         geo::push_box(&mut s.lit, [gx + 1.4, gy + sr * 0.5, gz + 1.3], [sr, sr * 0.6, sr], 0.0, Color::hex(0x9a9286, 1.0).0);
         geo::push_box(&mut s.lit, [gx + 1.4, gy + sr * 1.1, gz + 1.3], [sr * 0.6, sr * 0.4, sr * 0.6], 0.0, Color::hex(0x837b6f, 1.0).0);
+        // ORE heap — dark, metallic, faintly glinting rocks — scaled to the ore won by
+        // mining (scarcity world only, so a non-mining village shows none).
+        if world.scarcity_world && world.ore_stock > 0.5 {
+            let oref = (world.ore_stock / 30.0).clamp(0.0, 1.0);
+            let orr = 0.12 + 0.26 * oref;
+            geo::push_box(&mut s.lit, [gx + 1.4, gy + orr * 0.5, gz - 1.2], [orr, orr * 0.6, orr], 0.4, Color::hex(0x4a4a52, 1.0).0);
+            geo::push_box(&mut s.lit, [gx + 1.1, gy + orr * 0.4, gz - 1.0], [orr * 0.6, orr * 0.45, orr * 0.6], 0.0, Color::hex(0x5e5a55, 1.0).0);
+            glow(&mut s, [gx + 1.3, gy + orr * 0.6, gz - 1.1], 0.35, Color::hex(0x8fd0ff, 0.16)); // a cool metallic glint
+        }
     }
     if world.open_world {
         // The granary / hearth: a squat wooden store distinct from the thin stone

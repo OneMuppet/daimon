@@ -870,6 +870,10 @@ pub struct GameWorld {
     /// Village stone stockpile (units). Rises as minds quarry rocks; drawn down as
     /// walls go up. Inert unless `materials_econ`.
     pub stone_stock: f32,
+    /// Village ORE stockpile (units) — won by MINING worked-out rock (deep quarrying,
+    /// once a rock's surface stone is mostly gone). A scarce, advanced material. Only
+    /// ever accrues in a `scarcity_world`, so other worlds carry none and are unchanged.
+    pub ore_stock: f32,
     /// Quarry rocks — a position + a stone level that depletes when quarried and
     /// slowly replenishes. Empty unless `materials_econ`, so other worlds carry none.
     /// Seeded from a side-RNG so enabling the economy never perturbs the main stream.
@@ -1464,6 +1468,7 @@ impl GameWorld {
             materials_econ: false,
             wood_stock: 0.0,
             stone_stock: 0.0,
+            ore_stock: 0.0,
             rocks: Vec::new(),
             wildlife: false,
             hunting: false,
@@ -4192,6 +4197,13 @@ impl GameWorld {
                             let taken = r.stone.min(0.30);
                             r.stone -= taken;
                             self.stone_stock += taken * 2.4;
+                            // MINING (scarcity world): once a rock is worked thin, deeper
+                            // digging turns the quarry into a MINE that yields ORE — a
+                            // scarce advanced material won as the easy surface stone runs
+                            // out. Gated on the live flag, so other worlds win no ore.
+                            if self.scarcity_world && r.stone < 0.5 {
+                                self.ore_stock += taken * 1.2;
+                            }
                             self.structures_dirty = true;
                             self.agents[i].flash = 0.5;
                             self.agents[i].flash_kind = Process::Routine;
