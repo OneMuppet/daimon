@@ -986,16 +986,20 @@ pub mod pieces {
         push_box(out, [cx, y0 + 0.04, cz], [0.10, 0.04, 0.10], 0.0, STONE_DARK);
     }
 
-    /// A real stepped staircase climbing `rise` over the run from (x,z) toward
-    /// +Z, `steps` treads. Sits at floor level `y0`. Each tread is a box; the
-    /// stack reads as proper stairs, not a ramp.
+    /// A real stepped staircase climbing `rise` over its run, RISING toward -Z (the
+    /// building wall) — the low entry tread is at the +Z (outer) end and the treads
+    /// climb up to the landing at the wall, so you walk in from outside and up onto
+    /// the upper floor. `steps` treads, sitting at floor level `y0`. Each tread is a
+    /// box; the stack reads as proper stairs, not a ramp.
     pub fn staircase(out: &mut Vec<LitVertex>, cx: f32, y0: f32, cz: f32, rise: f32, steps: usize) {
         let steps = steps.max(2);
         let run = 0.78; // total horizontal run (within a cell)
         let tread_d = run / steps as f32;
         let step_h = rise / steps as f32;
         for i in 0..steps {
-            let h = (i + 1) as f32 * step_h;
+            // tallest at the -Z (near-wall) end, shortest at the +Z (outer) entry, so
+            // the flight climbs toward the wall/landing rather than away from it.
+            let h = (steps - i) as f32 * step_h;
             let z = cz - run * 0.5 + tread_d * (i as f32 + 0.5);
             push_box(
                 out,
@@ -1280,6 +1284,28 @@ pub mod pieces {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staircase_climbs_toward_the_wall() {
+        // a flight at cz=10 rising 2.0 over 6 steps. The treads must get TALLER toward
+        // -Z (the building wall) and shorter toward +Z (the outer entry), so the stair
+        // climbs up to the landing rather than away from it.
+        let mut v = Vec::new();
+        pieces::staircase(&mut v, 0.0, 0.0, 10.0, 2.0, 6);
+        // the highest vertex (top of the tallest tread) and the lowest non-zero one.
+        let top = v.iter().max_by(|a, b| a.pos[1].total_cmp(&b.pos[1])).unwrap();
+        let bot = v
+            .iter()
+            .filter(|p| p.pos[1] > 0.01)
+            .min_by(|a, b| a.pos[1].total_cmp(&b.pos[1]))
+            .unwrap();
+        assert!(
+            top.pos[2] < bot.pos[2],
+            "tallest tread (z={}) should be toward -Z of the shortest (z={})",
+            top.pos[2],
+            bot.pos[2]
+        );
+    }
 
     #[test]
     fn terrain_is_deterministic_nonempty_trilist() {
