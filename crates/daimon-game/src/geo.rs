@@ -638,10 +638,43 @@ pub fn build_terrain(w: i32, h: i32, n: usize) -> Vec<LitVertex> {
     out
 }
 
+/// Deterministic FOREST GROVE centres for an island of `w`×`h` — a handful of
+/// `(x, z, radius)` clusters. Both the decorative flora AND the sim's harvestable
+/// trees cluster around these, so the woods read as cohesive forests in a few
+/// places rather than a uniform sprinkle. Pure function of the dimensions (no RNG
+/// state), so the renderer and the sim agree on where the woods are.
+pub fn grove_centers(w: i32, h: i32) -> Vec<(f32, f32, f32)> {
+    // grove count scales with island area (a small island ⇒ 3, the showcase ⇒ ~6).
+    let n = (((w * h) / 1800).clamp(3, 8)) as u64;
+    let mut out = Vec::new();
+    for i in 0..n {
+        let hc = splitmix(0x6_F0_5E_57u64 ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        // keep groves off the very rim (where the land slopes into the sea).
+        let gx = (0.12 + hash_unit(hc, 1) * 0.76) * w as f32;
+        let gz = (0.12 + hash_unit(hc, 2) * 0.76) * h as f32;
+        let rad = 7.0 + hash_unit(hc, 3) * 9.0;
+        out.push((gx, gz, rad));
+    }
+    out
+}
+
+/// Forest DENSITY at `(x, z)` in `[0,1]` — a smooth sum of gaussian bumps around
+/// the [`grove_centers`], so trees crowd inside groves and thin out between them.
+pub fn forest_density(x: f32, z: f32, groves: &[(f32, f32, f32)]) -> f32 {
+    let mut d = 0.0f32;
+    for &(gx, gz, rad) in groves {
+        let dist2 = (x - gx) * (x - gx) + (z - gz) * (z - gz);
+        d += (-dist2 / (2.0 * rad * rad)).exp();
+    }
+    d.min(1.0)
+}
+
 /// Decorative flora strewn across the island — pine-ish trees, boulders and
 /// grass tufts — so the land reads as a lush diorama, not a bare mesh.
-/// Deterministic; baked into the static terrain buffer.
+/// Deterministic; baked into the static terrain buffer. Trees CLUSTER into the
+/// island's groves (dense woods in a few places); boulders/grass stay sprinkled.
 fn scatter_flora(out: &mut Vec<LitVertex>, w: i32, h: i32) {
+    let groves = grove_centers(w, h);
     let (cx, cz) = (w as f32 * 0.5, h as f32 * 0.5);
     let radius = (w.max(h) as f32) * 0.62;
     let step = 1.4f32;
@@ -658,7 +691,11 @@ fn scatter_flora(out: &mut Vec<LitVertex>, w: i32, h: i32) {
                 continue;
             }
             let roll = hash_unit(hh, 3);
-            if roll < 0.22 {
+            // trees crowd into the groves and thin out between them: dense canopy where
+            // the forest density is high, only the odd lone tree on the open land.
+            let density = forest_density(jx, jz, &groves);
+            let tree_p = 0.03 + 0.62 * density;
+            if roll < tree_p {
                 // a conifer: trunk + two foliage tiers
                 let th = 0.5 + hash_unit(hh, 4) * 0.6;
                 let trunk = [0.32, 0.22, 0.14, 1.0];
