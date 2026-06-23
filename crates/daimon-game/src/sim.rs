@@ -327,6 +327,12 @@ pub struct Agent {
     /// fired/landed, decays each frame — the renderer flashes a clash spark / muzzle
     /// flash from it. Inert (stays 0) off a war world.
     pub weapon_flash: f32,
+
+    /// True once this mind has ever served as its village's LEADER (set in
+    /// `update_leaders`; persists after death so a fallen leader can be honoured with a
+    /// BURIAL MOUND at the grave). Only ever set behind the civ/society path, so on a
+    /// world without leaders it stays false and nothing changes.
+    pub was_leader: bool,
 }
 
 pub struct Resource {
@@ -958,6 +964,11 @@ pub struct GameWorld {
     pub wars_declared: u32,
     pub wars_resolved: u32,
     pub war_casualties: u32,
+    /// CHRONICLE — a rolling log of significant events `(tick, line)` for the HUD
+    /// (births, deaths, wars, era advances, leaders, wonders). Capped to the most
+    /// recent few. Live-only presentation: it records, it never feeds back into the
+    /// sim, so it cannot perturb cognition or the RNG stream.
+    pub events: Vec<(u64, String)>,
     /// Dedicated warfare RNG. ALL muster / strike-coin draws come from here so the main
     /// stream is never perturbed. Seeded when `war` is turned on.
     war_rng: Rng,
@@ -1387,6 +1398,7 @@ impl GameWorld {
                 // peacetime by default; only `set_war`-armed worlds ever muster a warband.
                 warband: None,
                 weapon_flash: 0.0,
+                was_leader: false,
             });
         }
 
@@ -1469,6 +1481,7 @@ impl GameWorld {
             wars_declared: 0,
             wars_resolved: 0,
             war_casualties: 0,
+            events: Vec::new(),
             war_rng: Rng::new(0),
             // civilization capstone: off by default (the incumbent). The flag, side-RNG,
             // treaties, allied-since clocks, rockets, and tallies are inert until
@@ -2025,6 +2038,16 @@ impl GameWorld {
 
     /// Refresh each peopled village's LEADER: the eldest living member (lowest
     /// `born_tick`, ties broken by id for determinism). Title passes on as elders die.
+    /// Record a significant event in the CHRONICLE (capped to the most recent entries).
+    /// Pure record-keeping — never read back by the sim, so it can't affect determinism.
+    fn log_event(&mut self, line: impl Into<String>) {
+        self.events.push((self.tick, line.into()));
+        let n = self.events.len();
+        if n > 48 {
+            self.events.drain(0..n - 48);
+        }
+    }
+
     fn update_leaders(&mut self) {
         let k = self.villages.len();
         let mut best: Vec<Option<(u64, EntityId)>> = vec![None; k];
@@ -2049,6 +2072,15 @@ impl GameWorld {
                     v.leader = None;
                     v.leader_name.clear();
                 }
+            }
+        }
+        // mark each standing leader persistently — `v.leader` is reassigned the moment a
+        // leader dies, so a per-mind flag is what lets the renderer raise a BURIAL MOUND
+        // over a fallen leader's grave.
+        for entry in best.iter().flatten() {
+            let id = entry.1;
+            if let Some(a) = self.agents.iter_mut().find(|a| a.id == id) {
+                a.was_leader = true;
             }
         }
     }
@@ -2109,6 +2141,8 @@ impl GameWorld {
             }
         }
         for (vi, kind, name) in to_raise {
+            let vname = self.villages[vi].name.clone();
+            self.log_event(format!("\u{2605} {vname} raises a wonder: {name}"));
             self.villages[vi].wonder = Some(Wonder { kind, name, raised: now });
             self.wonders_raised += 1;
         }
@@ -2268,6 +2302,8 @@ impl GameWorld {
         self.muster_warband(b, a, front); // b's band marches against a
         self.wars.push(War { a, b, front, started: self.tick, dead_a: 0, dead_b: 0 });
         self.wars_declared += 1;
+        let (na, nb) = (self.villages[a as usize].name.clone(), self.villages[b as usize].name.clone());
+        self.log_event(format!("\u{2694} {na} goes to war with {nb} over dwindling land"));
     }
 
     /// Pick up to [`WARBAND_MAX`] of village `v`'s adult `can_war` minds — the ones
@@ -2310,6 +2346,8 @@ impl GameWorld {
         self.war_cooldowns.insert((a, b), self.tick + WAR_COOLDOWN);
         self.wars.retain(|w| !(w.a == a && w.b == b));
         self.wars_resolved += 1;
+        let (na, nb) = (self.villages[a as usize].name.clone(), self.villages[b as usize].name.clone());
+        self.log_event(format!("\u{262e} {na} and {nb} make a wary peace"));
     }
 
     /// Run every active war's BATTLE for one tick: each warrior marches to its war's
@@ -2466,6 +2504,7 @@ impl GameWorld {
         // --- a per-village PEACE factor from its standing relations: at peace it learns
         // fastest; a rival/enemy on the borders drags it toward the war floor. ---
         let peace = self.village_peace_factors();
+        let mut advances: Vec<(String, &'static str)> = Vec::new();
         for (vi, v) in self.villages.iter_mut().enumerate() {
             v.buildings = builds[vi];
             if v.population == 0 {
@@ -2475,8 +2514,15 @@ impl GameWorld {
             let build_f = 1.0
                 + RESEARCH_BUILDING_BONUS * (builds[vi] as f32).min(RESEARCH_BUILDING_CAP);
             let rate = RESEARCH_PER_HEAD * pop_f * build_f * peace[vi];
+            let prev = v.era;
             v.research += rate;
             v.era = era_for_research(v.research);
+            if (v.era as usize) > (prev as usize) {
+                advances.push((v.name.clone(), v.era.name()));
+            }
+        }
+        for (name, era) in advances {
+            self.log_event(format!("\u{2692} {name} advances to {era}"));
         }
     }
 
@@ -3214,6 +3260,14 @@ impl GameWorld {
             }
         };
         let cid = self.alloc_id();
+        // chronicle the birth (name + village captured before the child is moved in).
+        let birth_line = {
+            let vn = village.and_then(|v| self.villages.get(v as usize)).map(|v| v.name.clone());
+            match vn {
+                Some(vn) => format!("\u{2726} {child_name} born in {vn}"),
+                None => format!("\u{2726} {child_name} is born"),
+            }
+        };
 
         // the parents (and the child) record the family tie.
         let (pid_i, pid_j) = (self.agents[i].id, self.agents[j].id);
@@ -3254,8 +3308,10 @@ impl GameWorld {
             // a newborn is a civilian; it can only be mustered once grown to an adult.
             warband: None,
             weapon_flash: 0.0,
+            was_leader: false,
         });
         self.births += 1;
+        self.log_event(birth_line);
     }
 
     /// Advance every mind's age; when a mind that *ages* (its `can_age` gene on)
@@ -4372,6 +4428,7 @@ impl GameWorld {
     fn reap_dead(&mut self) {
         let tick = self.tick;
         let mut fallen: Vec<(EntityId, Pos, &'static str)> = Vec::new();
+        let mut chronicle: Vec<(String, &'static str, bool)> = Vec::new();
         for a in &mut self.agents {
             if a.alive && a.mind.can_die() && a.body.health <= 0.0 {
                 a.alive = false;
@@ -4381,6 +4438,7 @@ impl GameWorld {
                 }
                 a.say = None;
                 fallen.push((a.id, a.body.pos, a.death_cause));
+                chronicle.push((a.name.clone(), a.death_cause, a.was_leader));
             }
         }
         for (id, pos, cause) in fallen {
@@ -4388,6 +4446,14 @@ impl GameWorld {
                 if a.alive && a.id != id {
                     a.inbox.push(WorldEvent::Died { id, pos, cause: cause.to_string() });
                 }
+            }
+        }
+        // chronicle the losses (a fallen leader gets a grander line).
+        for (name, cause, was_leader) in chronicle {
+            if was_leader {
+                self.log_event(format!("\u{26b0} Chief {name} laid to rest ({cause})"));
+            } else {
+                self.log_event(format!("\u{271d} {name} fell to {cause}"));
             }
         }
     }

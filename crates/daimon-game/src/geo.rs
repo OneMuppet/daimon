@@ -511,6 +511,35 @@ pub fn push_car(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32,
     }
 }
 
+/// Armour a warrior so a SOLDIER reads as a soldier, not a civilian with a weapon:
+/// a helmet with a visor slit, a chest cuirass and shoulder pauldrons, tinted by era
+/// (`era`: 0 hide, 1 bronze, 2 steel, 3 energy). Built in the figure's LOCAL frame
+/// (mirrors `push_villager`'s head/torso heights). Render-only; called only for minds
+/// the world reports as mustered warriors.
+#[allow(clippy::too_many_arguments)]
+pub fn push_armor(out: &mut Vec<LitVertex>, x: f32, gy: f32, z: f32, heading: f32, sc: f32, era: u8) {
+    let hip = 0.30;
+    let torso_h = 0.30;
+    let head_r = 0.135;
+    let head_cy = hip + torso_h * 2.0 + head_r + 0.04;
+    let metal = match era {
+        0 => [0.45, 0.32, 0.20, 1.0], // boiled hide
+        1 => [0.72, 0.52, 0.26, 1.0], // bronze
+        2 => [0.74, 0.78, 0.84, 1.0], // steel
+        _ => [0.60, 0.85, 1.0, 1.0],  // energy
+    };
+    let dark = mul(metal, 0.65);
+    // helmet — a dome over the head + a dark visor slit at the front.
+    push_fixed(out, x, gy, z, heading, sc, 0.0, 0.0, head_cy + head_r * 0.28, [head_r * 1.18, head_r * 0.95, head_r * 1.18], metal);
+    push_fixed(out, x, gy, z, heading, sc, head_r * 0.85, 0.0, head_cy + head_r * 0.05, [head_r * 0.35, head_r * 0.35, head_r * 0.9], dark);
+    // cuirass — a chest plate over the torso.
+    push_fixed(out, x, gy, z, heading, sc, 0.03, 0.0, hip + torso_h + 0.04, [0.155, torso_h * 0.82, 0.115], metal);
+    // pauldrons — a plate on each shoulder.
+    for s in [-1.0f32, 1.0] {
+        push_fixed(out, x, gy, z, heading, sc, 0.0, s * 0.17, hip + torso_h * 2.0, [0.075, 0.055, 0.075], metal);
+    }
+}
+
 /// The local-frame right-hand grip world position for a warrior (so the renderer can
 /// anchor a muzzle flash / clash spark there). Mirrors `push_weapon`'s grip math.
 pub fn weapon_muzzle(x: f32, gy: f32, z: f32, heading: f32, sc: f32, ranged: bool) -> [f32; 3] {

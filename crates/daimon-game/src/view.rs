@@ -1059,6 +1059,18 @@ pub fn build_full(
         // stone, so the village visibly depopulates and the loss is legible.
         if !a.alive {
             let age = world.tick.saturating_sub(a.death_tick.unwrap_or(world.tick)) as f32;
+            // A fallen LEADER is honoured with a BURIAL MOUND — a broad tiered earthen
+            // barrow topped by a standing monument with a gilded cap and a steady warm
+            // glow — so a chief's passing leaves a lasting mark on the land, not just a
+            // cairn. Drawn under the usual marker (which still caps it).
+            if a.was_leader {
+                geo::push_box(&mut s.lit, [x, gy + 0.10, z], [0.72, 0.10, 0.72], 0.0, Color::hex(0x5b4a32, 1.0).0);
+                geo::push_box(&mut s.lit, [x, gy + 0.26, z], [0.52, 0.10, 0.52], 0.0, Color::hex(0x6b5838, 1.0).0);
+                geo::push_box(&mut s.lit, [x, gy + 0.40, z], [0.32, 0.10, 0.32], 0.0, Color::hex(0x796343, 1.0).0);
+                geo::push_box(&mut s.lit, [x, gy + 0.95, z], [0.10, 0.55, 0.10], 0.0, Color::hex(0x8a7a5a, 1.0).0);
+                geo::push_box(&mut s.lit, [x, gy + 1.54, z], [0.14, 0.07, 0.14], 0.0, Color::hex(0xc8a86a, 1.0).0);
+                glow(&mut s, [x, gy + 1.05, z], 0.95, Color::hex(0xffd98a, 0.22));
+            }
             // a low cairn: a squat dark stone with a paler capstone.
             geo::push_box(&mut s.lit, [x, gy + 0.18, z], [0.26, 0.18, 0.26], 0.0, Color::hex(0x4a4652, 1.0).0);
             geo::push_box(&mut s.lit, [x, gy + 0.34, z], [0.16, 0.08, 0.16], 0.0, Color::hex(0x6a6676, 1.0).0);
@@ -1189,6 +1201,9 @@ pub fn build_full(
                     crate::sim::Weapon::Energy => 3,
                 };
                 geo::push_weapon(&mut s.lit, x, gy + idle_bob * sc, z, heading, sc, phase, stride, code);
+                // ARMOUR so a soldier reads as a soldier: helmet + cuirass + pauldrons,
+                // tinted to the same era rung as the weapon.
+                geo::push_armor(&mut s.lit, x, gy + idle_bob * sc, z, heading, sc, code);
                 // a low, hostile red aura marks this mind as AT WAR (distinct from the
                 // drive halo) — a warband reads as a red-lit cluster marching the border.
                 glow(&mut s, [x, gy + 0.5 * sc, z], 1.1 * sc, Color::hex(0xff4534, 0.20));
@@ -1398,6 +1413,10 @@ pub fn build_full(
             dialog_panel(&mut chrome, world, dlg, sw / ui, sh / ui);
         } else {
             inspector(&mut chrome, world, selected, sw / ui, sh / ui);
+        }
+        // CHRONICLE — a small scrolling log of significant events, bottom-left.
+        if !world.events.is_empty() {
+            event_log_panel(&mut chrome, world, sw / ui, sh / ui);
         }
     }
     for mut q in chrome.quads {
@@ -3041,6 +3060,28 @@ fn inspector(s: &mut Scene, world: &GameWorld, selected: Option<usize>, sw: f32,
         s.text("VIVID MEMORY", lx, y, 11.0, Color::hex(CORAL, 1.0));
         y += 16.0;
         s.text_wrapped(&ep.what, lx, y, 11.5, cw, Color::hex(MUTED, 1.0));
+    }
+}
+
+/// The CHRONICLE panel (bottom-left): the most recent significant events — births,
+/// deaths/burials, wars, era advances, wonders — newest at the bottom, so the world's
+/// story scrolls as you watch. Read-only.
+fn event_log_panel(s: &mut Scene, world: &GameWorld, _sw: f32, sh: f32) {
+    let rows = 8usize;
+    let pw = 318.0;
+    let lh = 15.0;
+    let ph = 30.0 + rows as f32 * lh;
+    let px = 14.0;
+    let py = sh - ph - 14.0;
+    s.rrect(px, py, pw, ph, 12.0, Color::hex(INK, 0.78));
+    s.text("CHRONICLE", px + 16.0, py + 12.0, 11.0, Color::hex(CORAL, 1.0));
+    let start = world.events.len().saturating_sub(rows);
+    let mut yy = py + 32.0;
+    for (tick, line) in &world.events[start..] {
+        let day = tick / 240; // ~a day per 240 ticks, just a readable stamp
+        s.text(format!("d{day}"), px + 16.0, yy, 9.5, Color::hex(MUTED, 0.7));
+        s.text(line, px + 52.0, yy, 10.5, Color::hex(PAPER, 0.9));
+        yy += lh;
     }
 }
 
