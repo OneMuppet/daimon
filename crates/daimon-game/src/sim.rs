@@ -875,6 +875,13 @@ pub struct GameWorld {
     /// ([`wild_rng`]) so the main deterministic stream is never perturbed. Only the live
     /// showcase (`Game::new`) and `village_diag` flip it on.
     pub wildlife: bool,
+    /// LIVE-ONLY HUNTING (default false). When true, an adult villager standing next to
+    /// a live deer or sheep may TAKE it for meat — restoring its own energy + a little
+    /// health, despawning the animal (which respawns elsewhere like any caught prey).
+    /// Opportunistic only: it does NOT change where minds move (no chase), so it adds no
+    /// new pathing. Enabled ONLY by the live `Game::new`; the harness and the seed-tuned
+    /// society/war balance tests never flip it, so they are byte-identical.
+    pub hunting: bool,
     /// The wolf pack(s): grey pack hunters. Empty unless `wildlife`.
     pub wolves: Vec<Wolf>,
     /// The solitary bears. Empty unless `wildlife`.
@@ -1446,6 +1453,7 @@ impl GameWorld {
             stone_stock: 0.0,
             rocks: Vec::new(),
             wildlife: false,
+            hunting: false,
             wolves: Vec::new(),
             bears: Vec::new(),
             deer: Vec::new(),
@@ -4244,6 +4252,8 @@ impl GameWorld {
         if self.wildlife {
             self.step_wildlife();
             self.reap_dead();
+            // villagers may take adjacent prey for meat (live game only; inert otherwise).
+            self.step_hunting();
         }
         // LIFE-CYCLE (live-only): advance ages, grow children, form pair-bonds,
         // birth inherited children, and pass elders of old age — all off the
@@ -5115,6 +5125,57 @@ impl GameWorld {
 
     /// A predator catches a deer: the deer despawns (hidden) and is scheduled to
     /// respawn as a fresh deer elsewhere — renewable prey, so the herd persists.
+    /// Turn LIVE-ONLY hunting on/off (the live game only). When on, adult villagers take
+    /// adjacent prey for meat. Inert otherwise, so seeded/harness worlds are unchanged.
+    pub fn set_hunting(&mut self, on: bool) {
+        self.hunting = on;
+    }
+
+    /// OPPORTUNISTIC HUNT: any adult villager standing next to a live deer or sheep may
+    /// take it — restoring its energy + a little health, despawning the animal (it
+    /// respawns elsewhere). It does NOT steer minds toward prey (no new pathing), so it
+    /// only fires when a mind already happens to be adjacent. Off `wild_rng`. Runs only
+    /// behind the `hunting` flag (the live game), so the harness + balance tests never
+    /// hit it and stay byte-identical.
+    fn step_hunting(&mut self) {
+        if !self.hunting {
+            return;
+        }
+        let mut hunts: Vec<(usize, bool, usize)> = Vec::new(); // (mind, is_deer, prey_idx)
+        for (mi, a) in self.agents.iter().enumerate() {
+            if !a.alive || a.maturity < 0.9 {
+                continue;
+            }
+            let p = a.body.pos;
+            if let Some(di) = self.deer.iter().position(|d| d.respawn_at.is_none() && d.pos.manhattan(p) <= 1) {
+                if self.wild_rng.chance(0.12) {
+                    hunts.push((mi, true, di));
+                    continue;
+                }
+            }
+            if let Some(si) = self.sheep.iter().position(|s| s.respawn_at.is_none() && s.pos.manhattan(p) <= 1) {
+                if self.wild_rng.chance(0.12) {
+                    hunts.push((mi, false, si));
+                }
+            }
+        }
+        for (mi, is_deer, pi) in hunts {
+            if is_deer {
+                self.catch_deer(pi);
+            } else {
+                self.sheep[pi].respawn_at = Some(self.tick + 120);
+                self.sheep[pi].flash = 1.0;
+            }
+            let b = &mut self.agents[mi].body;
+            b.energy = (b.energy + 0.4).min(1.0);
+            b.health = (b.health + 0.15).min(1.0);
+            self.agents[mi].flash = 0.7;
+            self.agents[mi].flash_kind = Process::Routine;
+            let name = self.agents[mi].name.clone();
+            self.log_event(format!("\u{1f3f9} {name} hunted {}", if is_deer { "a deer" } else { "a sheep" }));
+        }
+    }
+
     fn catch_deer(&mut self, deer_idx: usize) {
         let d = &mut self.deer[deer_idx];
         if d.respawn_at.is_some() {

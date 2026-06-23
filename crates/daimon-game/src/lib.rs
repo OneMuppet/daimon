@@ -173,6 +173,9 @@ impl Game {
         // dedicated side-RNG so the main deterministic stream is untouched. Tuned so the
         // village mostly thrives with the occasional grievable loss, not a bloodbath.
         world.set_wildlife(true);
+        // HUNTING on for the live showcase: villagers take adjacent deer/sheep for meat.
+        // Live-only (opportunistic, no new pathing); the harness never flips it.
+        world.set_hunting(true);
         // LIFE-CYCLE on for the live showcase: aging, pair-bonds, inherited children,
         // natural death. Live-only and seeded off a dedicated side-RNG, so the seeded
         // harness/AC/proof paths (which never call this) stay byte-identical. The
