@@ -61,7 +61,7 @@ pub struct Renderer {
     water_pipeline: wgpu::RenderPipeline,
     add_pipeline: wgpu::RenderPipeline,
     terrain: Option<(wgpu::Buffer, u32)>,
-    terrain_key: (i32, i32),
+    terrain_key: (i32, i32, u64),
     water_vbuf: wgpu::Buffer,
     water_len: u32,
     dyn_lit: wgpu::Buffer,
@@ -405,7 +405,7 @@ impl Renderer {
             water_pipeline,
             add_pipeline,
             terrain: None,
-            terrain_key: (0, 0),
+            terrain_key: (0, 0, 0),
             water_vbuf,
             water_len,
             dyn_lit,
@@ -447,11 +447,19 @@ impl Renderer {
     }
 
     fn ensure_terrain(&mut self, device: &wgpu::Device, scene: &Scene) {
-        let key = scene.world_dims;
+        // signature of the road network (rounded endpoints) so the terrain re-bakes —
+        // clearing flora along the new roads — when the network appears or shifts.
+        let mut rsig: u64 = 0;
+        for r in &scene.roads {
+            for &v in r {
+                rsig = rsig.wrapping_mul(0x0100_0000_01b3).wrapping_add(v.round() as i64 as u64);
+            }
+        }
+        let key = (scene.world_dims.0, scene.world_dims.1, rsig);
         if self.terrain.is_some() && self.terrain_key == key {
             return;
         }
-        let verts = crate::geo::build_terrain(key.0, key.1, 56);
+        let verts = crate::geo::build_terrain(key.0, key.1, 56, &scene.roads);
         let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("terrain"),
             contents: bytemuck::cast_slice(&verts),

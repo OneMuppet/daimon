@@ -614,7 +614,7 @@ pub fn build_water(extent: f32) -> Vec<LitVertex> {
 /// The island mesh over the sim plane — an `n`-resolution displaced grid,
 /// vertex-coloured by elevation + slope biome. Season/day grading is the
 /// shader's job (so one mesh serves every season).
-pub fn build_terrain(w: i32, h: i32, n: usize) -> Vec<LitVertex> {
+pub fn build_terrain(w: i32, h: i32, n: usize, roads: &[[f32; 4]]) -> Vec<LitVertex> {
     let (cx, cz) = (w as f32 * 0.5, h as f32 * 0.5);
     let radius = (w.max(h) as f32) * 0.62;
     // a generous margin so the shoreline + sea ring sit inside the frame.
@@ -663,7 +663,7 @@ pub fn build_terrain(w: i32, h: i32, n: usize) -> Vec<LitVertex> {
             );
         }
     }
-    scatter_flora(&mut out, w, h);
+    scatter_flora(&mut out, w, h, roads);
     out
 }
 
@@ -720,9 +720,26 @@ pub fn forest_density(x: f32, z: f32, groves: &[(f32, f32, f32)]) -> f32 {
 /// grass tufts — so the land reads as a lush diorama, not a bare mesh.
 /// Deterministic; baked into the static terrain buffer. Trees CLUSTER into the
 /// island's groves (dense woods in a few places); boulders/grass stay sprinkled.
-fn scatter_flora(out: &mut Vec<LitVertex>, w: i32, h: i32) {
+fn scatter_flora(out: &mut Vec<LitVertex>, w: i32, h: i32, roads: &[[f32; 4]]) {
     let groves = grove_centers(w, h);
     let rocks = rock_centers(w, h);
+    // a cell is ON a road if it's within this distance of any road centre-line — flora
+    // there is CLEARED so a road runs through open, cleared ground (no trees/boulders
+    // poking up through it).
+    const ROAD_CLEAR: f32 = 1.6;
+    let on_road = |x: f32, z: f32| -> bool {
+        roads.iter().any(|&[ax, az, bx, bz]| {
+            let (dx, dz) = (bx - ax, bz - az);
+            let len2 = dx * dx + dz * dz;
+            if len2 < 1e-3 {
+                return false;
+            }
+            // distance from (x,z) to the segment a→b.
+            let t = (((x - ax) * dx + (z - az) * dz) / len2).clamp(0.0, 1.0);
+            let (px, pz) = (ax + dx * t, az + dz * t);
+            (x - px) * (x - px) + (z - pz) * (z - pz) < ROAD_CLEAR * ROAD_CLEAR
+        })
+    };
     let (cx, cz) = (w as f32 * 0.5, h as f32 * 0.5);
     let radius = (w.max(h) as f32) * 0.62;
     let step = 1.4f32;
@@ -735,6 +752,11 @@ fn scatter_flora(out: &mut Vec<LitVertex>, w: i32, h: i32) {
             let jz = z + (hash_unit(hh, 2) - 0.5) * step;
             let g = terrain_height(jx, jz, cx, cz, radius);
             if g <= 0.35 {
+                x += step;
+                continue;
+            }
+            // CLEAR the road corridor — no trees/boulders/grass poking up through it.
+            if on_road(jx, jz) {
                 x += step;
                 continue;
             }
@@ -1397,8 +1419,8 @@ mod tests {
 
     #[test]
     fn terrain_is_deterministic_nonempty_trilist() {
-        let a = build_terrain(40, 26, 48);
-        let b = build_terrain(40, 26, 48);
+        let a = build_terrain(40, 26, 48, &[]);
+        let b = build_terrain(40, 26, 48, &[]);
         assert!(!a.is_empty());
         assert_eq!(a.len() % 3, 0);
         assert!(a.iter().zip(&b).all(|(x, y)| x.pos == y.pos && x.color == y.color));

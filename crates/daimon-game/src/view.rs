@@ -715,6 +715,8 @@ pub fn build_full(
                 let (va, vb) = (&world.villages[i], &world.villages[j]);
                 let (ax, az) = (va.center.x as f32, va.center.y as f32);
                 let (bx, bz) = (vb.center.x as f32, vb.center.y as f32);
+                // record the corridor so the terrain bake clears flora along it.
+                s.roads.push([ax, az, bx, bz]);
                 let era = if world.eras {
                     (va.era as usize).max(vb.era as usize)
                 } else {

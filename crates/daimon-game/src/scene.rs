@@ -125,6 +125,10 @@ pub struct Scene {
     /// then skips the sea (you're indoors). Terrain is already suppressed via
     /// `world_dims = (0,0)`. Default false (out on the island, exactly as before).
     pub interior: bool,
+    /// ROAD corridors `[ax, az, bx, bz]` (village-centre to village-centre). The
+    /// terrain bake CLEARS decorative flora along these so a road runs clean instead
+    /// of having trees/boulders poke up through it. Empty off a road-built world.
+    pub roads: Vec<[f32; 4]>,
 }
 
 impl Scene {
@@ -137,6 +141,7 @@ impl Scene {
             sky: Sky::default(),
             world_dims: (40, 26),
             interior: false,
+            roads: Vec::new(),
         }
     }
 
